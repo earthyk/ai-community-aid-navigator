@@ -269,4 +269,25 @@ r8r = handle(req_like(cl, "agent_8", {"proposed_actions": acts, "needs": cp["nee
 check("C-REP Repair round: only the flagged card is rebuilt and the flag is addressed", [[target], [target], None],
       [[c["card_id"] for c in r8r["action_cards"]], r8r["repaired_card_ids"], r8r["action_cards"][0]["processing_estimate"]])
 
+# ---- Item 3 (v1.1 4.8, accepted Oct 26): contacts and hours in next_step only from verified claims, with check date
+vc = copy.deepcopy(cp)
+vc["checked_claims"] = vc["checked_claims"] + [
+    {"program_id": "MOCK-211-01", "field_path": "contact[0]", "claim_value": "Call 2-1-1 and press 8, Mon-Sat 7 a.m. to 7 p.m.",
+     "verification_status": "verified", "evidence_refs": ["EV-MOCK-008"], "checked_at": "2026-10-21T15:00:00Z", "issue": None},
+    {"program_id": "MOCK-UI-01", "field_path": "contact[0]", "claim_value": "Call 916-555-0100",
+     "verification_status": "unverified", "evidence_refs": [], "checked_at": "2026-10-21T15:00:00Z", "issue": "Not confirmed"}]
+vc["evidence_records"] = vc["evidence_records"] + [
+    {"evidence_id": "EV-MOCK-008", "program_id": "MOCK-211-01", "field_path": "contact[0]", "claim_value": "Call 2-1-1 and press 8, Mon-Sat 7 a.m. to 7 p.m.",
+     "source_url": "https://example.org/mock/211", "checked_at": "2026-10-21T15:00:00Z", "verification_status": "verified"}]
+r8v = handle(req_like(cl, "agent_8", {"proposed_actions": acts, "needs": vc["needs"], "matches": vc["matches"], "checked_claims": vc["checked_claims"], "plan_version": "plan_v1"}, 46))["result"]
+c211 = [c for c in r8v["action_cards"] if c["program_id"] == "MOCK-211-01"][0]
+cui = [c for c in r8v["action_cards"] if c["program_id"] == "MOCK-UI-01"]
+check("C-CON1 Verified contact and hours appear in next_step with the check date, evidence linked",
+      [True, True], ["Call 2-1-1 and press 8, Mon-Sat 7 a.m. to 7 p.m. (checked Oct 21)." in c211["next_step"], "EV-MOCK-008" in c211["source_refs"]])
+check("C-CON2 Unverified contact is never shown", True, all("916-555-0100" not in c["next_step"] for c in cui))
+closed_ns = [c["next_step"] for c in r8v["action_cards"] if c["program_id"] == "MOCK-RENT-01"]
+r10v = handle(req_like(cl, "agent_10", dict(r8v, needs=vc["needs"], matches=vc["matches"], checked_claims=vc["checked_claims"],
+              program_availability=vc["program_availability"], evidence_records=vc["evidence_records"], repair_round=0), 47))["result"]
+check("C-CON3 Plan with verified contacts passes Agent 10 (no V8)", [], [f["rule_id"] for f in r10v["flags"] if f["rule_id"] == "V8"])
+
 print(f"\n{sum(results)} of {len(results)} checks passed")

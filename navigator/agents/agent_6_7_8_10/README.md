@@ -12,7 +12,7 @@ Owner: Hisham | Contracts: SHARED_CONTRACTS_v1.1 + Slav's Agent 7/10 notes | Sta
 | File | Purpose |
 | --- | --- |
 | agent_6_7_8_10.py | The component |
-| tests/agent_6_7_8_10/run_tests.py | Runs 51 checks and writes navigator/samples/agent_6_7_8_10/ |
+| tests/agent_6_7_8_10/run_tests.py | Runs 54 checks and writes navigator/samples/agent_6_7_8_10/ |
 | tests/agent_6_7_8_10/fixtures/ | Slav's test files (Agent 6 Sacramento input, Agent 10 mixed plan) |
 | tests/agent_6_7_8_10/mock_input_v0.2.json | Our own mock data for the same case |
 | navigator/samples/agent_6_7_8_10/ | Example AgentResult JSON for every agent, including full Action Plans |
@@ -21,7 +21,7 @@ Owner: Hisham | Contracts: SHARED_CONTRACTS_v1.1 + Slav's Agent 7/10 notes | Sta
 ## How to run (from the repository root)
 1. `python3 tests/agent_6_7_8_10/run_tests.py`
 2. (Windows: `python tests/agent_6_7_8_10/run_tests.py`)
-3. Expected last line: `51 of 51 checks passed`
+3. Expected last line: `54 of 54 checks passed`
 Standard Python 3 only.
 
 ## Example output on Slav's case (navigator/samples/agent_6_7_8_10/slav_case_agent8_plan.json)
@@ -37,4 +37,4 @@ Standard Python 3 only.
 - All Agent 7 and 10 rules are automated. Q7 reports evidence age only until the team agrees a freshness window.
 - Injection (Q9) and wording checks use pattern matching; new phrasings may need new patterns.
 - Not connected to the Supervisor or IBM watsonx Orchestrate yet.
-- **Deferred (contract review Oct 30):** (a) `next_step` contacts and hours are not yet sourced from a verified `checked_claims[]` item with its check date — implementation date to agree (§4.8 ACCEPTED); (b) `agent7_findings[]` (Agents 6 & 8) and `open_agent7_findings[]` (Agent 10) are accepted in the envelope but not yet acted on; (c) `case_facts[]` is accepted by Agent 7 but not read; (d) `potential_options[]` is always returned empty.
+- **Deferred (contract review Oct 30):** (a) done Nov 1: `next_step` contacts and hours come only from verified `checked_claims[]` items, with the check date; (b) `agent7_findings[]` (Agents 6 & 8) and `open_agent7_findings[]` (Agent 10) are accepted in the envelope but not yet acted on; (c) `case_facts[]` is accepted by Agent 7 but not read; (d) `potential_options[]` is always returned empty.

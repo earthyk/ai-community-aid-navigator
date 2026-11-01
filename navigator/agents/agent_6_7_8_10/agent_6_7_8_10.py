@@ -114,6 +114,24 @@ def _program_label(match):
     return name or org
 
 
+CONTACT_FIELDS = ("contact", "hours", "opening_hours")
+
+
+def _verified_contacts(claims, program_id):
+    """Contacts and hours for next_step: only verified claims, each with its check date (v1.1 4.8, accepted Oct 26)."""
+    out = []
+    for c in claims:
+        if (c.get("program_id") == program_id and c.get("verification_status") == "verified"
+                and str(c.get("field_path", "")).split("[")[0] in CONTACT_FIELDS and c.get("claim_value")):
+            when = str(c.get("checked_at") or "")[:10]
+            try:
+                when = datetime.strptime(when, "%Y-%m-%d").strftime("%b %-d")
+            except ValueError:
+                continue  # no check date, so it cannot be shown
+            out.append((f"{str(c['claim_value']).strip()} (checked {when}).", c.get("evidence_refs", [])))
+    return out
+
+
 def _subcat(match, needs):
     if match.get("subcategory"):
         return match["subcategory"]
@@ -277,7 +295,11 @@ def agent_8(request):
                 title = f"{title} (reopens {reopen.group(1)})" if reopen else f"{title} (closed for now)"
                 reason = f"This program is temporarily closed right now. It may be relevant later because it {offers}."
                 next_step = "Use the open option above first. Check back with this program when it reopens."
-        else:
+        if m and not a["rationale"].startswith("Temporarily closed"):
+            for text, refs in _verified_contacts(p.get("checked_claims", []), a["program_id"]):
+                next_step = f"{next_step} {text}"
+                a = dict(a, evidence_refs=list(dict.fromkeys(a["evidence_refs"] + refs)))
+        if not m:
             title, reason = "Follow up on your applications", "Checking in helps you catch any requests for more information."
             next_step = "After applying, watch for letters or messages and respond to any requests for documents."
         related = m["need_ids"] if m else sorted({x["need_id"] for x in acts if x["action_id"] in a["dependency_ids"]})

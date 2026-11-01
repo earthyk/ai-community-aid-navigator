@@ -33,7 +33,7 @@
         "need_id": null,
         "field_path": "operating_hours",
         "evidence_refs": [],
-        "description": "Oldest evidence checked 8 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
+        "description": "Oldest evidence checked 11 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
         "recommended_action": "no_action"
       },
       {
@@ -44,7 +44,7 @@
         "need_id": null,
         "field_path": "program_exists",
         "evidence_refs": [],
-        "description": "Oldest evidence checked 8 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
+        "description": "Oldest evidence checked 11 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
         "recommended_action": "no_action"
       },
       {
@@ -55,7 +55,7 @@
         "need_id": null,
         "field_path": "application_method",
         "evidence_refs": [],
-        "description": "Oldest evidence checked 8 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
+        "description": "Oldest evidence checked 11 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
         "recommended_action": "no_action"
       },
       {
@@ -66,7 +66,7 @@
         "need_id": null,
         "field_path": "deadlines",
         "evidence_refs": [],
-        "description": "Oldest evidence checked 8 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
+        "description": "Oldest evidence checked 11 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
         "recommended_action": "no_action"
       }
     ]
@@ -81,30 +81,30 @@
     {
       "code": "Q7",
       "severity": "info",
-      "message": "Oldest evidence checked 8 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
+      "message": "Oldest evidence checked 11 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
       "related_ref": "MOCK-FOOD-PANTRY-01"
     },
     {
       "code": "Q7",
       "severity": "info",
-      "message": "Oldest evidence checked 8 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
+      "message": "Oldest evidence checked 11 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
       "related_ref": "MOCK-CALFRESH-01"
     },
     {
       "code": "Q7",
       "severity": "info",
-      "message": "Oldest evidence checked 8 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
+      "message": "Oldest evidence checked 11 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
       "related_ref": "MOCK-EDD-UI-01"
     },
     {
       "code": "Q7",
       "severity": "info",
-      "message": "Oldest evidence checked 8 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
+      "message": "Oldest evidence checked 11 day(s) ago (2026-10-21T15:00:00Z); freshness window not agreed yet",
       "related_ref": "MOCK-RENT-ASSIST-01"
     }
   ],
   "clarification_requests": [],
   "evidence_refs": [],
-  "generated_at": "2026-10-30T07:03:50.985982+00:00",
+  "generated_at": "2026-11-01T19:05:56.594744+00:00",
   "is_mock": true
 }

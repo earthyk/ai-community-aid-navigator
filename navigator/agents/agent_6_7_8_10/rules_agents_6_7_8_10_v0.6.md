@@ -95,3 +95,9 @@ All Agent 7 and Agent 10 rules are now checked automatically except Q7 (needs th
 - Repair round: when repair_flags[] is passed, Agent 8 rebuilds only the flagged cards, applies each flag's correction and lists them in repaired_card_ids.
 - Missing or null input (for example needs: null) returns partial with INPUT_INCOMPLETE instead of an error.
 - Tests: C-NULL, C-NAME, C-EVP, C-REP. 51 of 51 checks pass.
+
+## v0.7, Nov 1 (item 3, contract 4.8 change request accepted Oct 26)
+- Agent 8 adds contacts and opening hours to next_step only from checked_claims[] items with verification_status = verified and field_path contact or hours, followed by the check date, for example "Call 2-1-1 and press 8, Mon-Sat 7 a.m. to 7 p.m. (checked Oct 21)." The claim's evidence refs are added to the card's source_refs.
+- Unverified contacts and claims without a check date are never shown. A temporarily closed program's card gets no contacts (not current help).
+- Agent 10 keeps flagging any contact not in the evidence (V8).
+- Tests: C-CON1, C-CON2, C-CON3. 54 of 54 checks pass.
