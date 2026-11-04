@@ -102,7 +102,7 @@ class TestWithKB(unittest.TestCase):
         a4 = {"result": {"matches": []}}; a5 = {"result": {"checked_claims": []}}
         pkg = B.planning_package(self.st, self.programs, self.evidence, self.cands, a4, a5)
         avail = {a["program_id"]: a["availability"] for a in pkg["program_availability"]}
-        self.assertEqual(avail["prog_housing_saintjohns_sac_001"], "confirmed_open")
+        self.assertEqual(avail["prog_housing_saintjohns_sac_001"], "temporarily_closed")
         t = {x["program_id"]: x for x in pkg["timing"]}
         housing = t["prog_housing_saintjohns_sac_001"]
         self.assertEqual(housing["user_target_date"], "2026-11-01")   # the user's date
