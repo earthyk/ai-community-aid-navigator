@@ -1,4 +1,4 @@
-# Agents 6, 7, 8, 10: Action Plan and Validation (mock component v0.7)
+# Agents 6, 7, 8, 10: Action Plan and Validation (mock component v0.8)
 Owner: Hisham | Contracts: SHARED_CONTRACTS_v1.1 + Slav's Agent 7/10 notes | Status: local mock, not yet IBM integrated
 
 ## What it does
@@ -41,7 +41,7 @@ Each appended item is followed by `"(checked Mon D)."` using the portable date h
 | File | Purpose |
 | --- | --- |
 | agent_6_7_8_10.py | The component |
-| tests/agent_6_7_8_10/run_tests.py | Runs 61 checks (writes navigator/samples/agent_6_7_8_10/ only with --save) |
+| tests/agent_6_7_8_10/run_tests.py | Runs 69 checks (writes navigator/samples/agent_6_7_8_10/ only with --save) |
 | tests/agent_6_7_8_10/fixtures/ | Slav's test files (Agent 6 Sacramento input, Agent 10 mixed plan) |
 | tests/agent_6_7_8_10/mock_input_v0.2.json | Our own mock data for the same case |
 | navigator/samples/agent_6_7_8_10/ | Example AgentResult JSON for every agent, including full Action Plans |
@@ -50,7 +50,7 @@ Each appended item is followed by `"(checked Mon D)."` using the portable date h
 ## How to run (from the repository root)
 1. `python3 tests/agent_6_7_8_10/run_tests.py`
 2. (Windows: `python tests/agent_6_7_8_10/run_tests.py`)
-3. Expected last line: `61 of 61 checks passed`
+3. Expected last line: `69 of 69 checks passed`
 Standard Python 3 only.
 
 ## Example output on Slav's case (navigator/samples/agent_6_7_8_10/slav_case_agent8_plan.json)
@@ -67,3 +67,4 @@ Standard Python 3 only.
 - Injection (Q9) and wording checks use pattern matching; new phrasings may need new patterns.
 - Not connected to the Supervisor or IBM watsonx Orchestrate yet.
 - **Deferred (contract review Oct 30):** (a) done Nov 1: `next_step` contacts and hours come only from verified `checked_claims[]` items, with the check date; (b) `agent7_findings[]` (Agents 6 & 8) and `open_agent7_findings[]` (Agent 10) are accepted in the envelope but not yet acted on; (c) `case_facts[]` is accepted by Agent 7 but not read; (d) `potential_options[]` is always returned empty.
+- The Windows date fix (PR #8) was made outside Bob; later changes are in Bob sessions.
