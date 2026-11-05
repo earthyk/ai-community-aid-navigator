@@ -127,7 +127,14 @@ _APP_METHOD_RE = re.compile(
     r"https?://"                            # URL
     r"|\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}"  # phone number
     r"|\b(online|by phone|by mail|by fax|in person)\b"  # named channel
+    r"|\b2-1-1\b|\b211\b"                  # 2-1-1 / 211 service line
+    r"|(?:call|text)\s+\d{3,}"             # "Call 211", "Call 898-211", etc.
     r"|\b(p\.?o\.?\s*box|po box|mailing address|street address|\d+\s+\w+\s+(st|ave|blvd|dr|rd|way|lane|ln|court|ct)\b)",  # address
+    re.I)
+
+# application_method rows that state a rule or requirement, not a way to apply
+_RULE_ROW_RE = re.compile(
+    r"^(you must|you may|minimum required|paper application forms|applicants under|to be eligible)",
     re.I)
 
 
@@ -173,17 +180,26 @@ def _build_contacts(claims, program_id, evidence_records=None):
             datetime.strptime(when, "%Y-%m-%d")
         except ValueError:
             continue  # no valid check date — never appears
-        # application_method rows must be actual ways to apply (A)
-        if fp.startswith("application_method") and not _APP_METHOD_RE.search(str(val)):
-            continue
+        # application_method rows: exclude rules/requirements; must be actual ways to apply
+        if fp.startswith("application_method"):
+            if _RULE_ROW_RE.match(str(val)):
+                continue
+            if not _APP_METHOD_RE.search(str(val)):
+                continue
         refs = list(c.get("evidence_refs") or [])
         # A8-04: at least one evidence_ref must be in the program's evidence records
         if valid_ev is not None and not (set(refs) & valid_ev):
             continue
         label = "How to apply" if fp.startswith("application_method") else "Contact"
+        # For URL application methods, normalise value to "Apply online: <clean url>"
+        raw_val = str(val).strip()
+        if label == "How to apply":
+            url_m = _URL_RE.search(raw_val)
+            if url_m:
+                raw_val = f"Apply online: {_clean_url(url_m.group(0))}"
         out.append({
             "label": label,
-            "value": str(val).strip(),
+            "value": raw_val,
             "hours": _extract_hours(val),
             "checked_at": when,
             "evidence_refs": refs,
@@ -192,15 +208,46 @@ def _build_contacts(claims, program_id, evidence_records=None):
 
 
 _URL_RE = re.compile(r"https?://\S+")
+_TRAIL_PUNCT_RE = re.compile(r"[\]\[)(.,;:\"']+$")
+
+
+def _clean_url(raw):
+    """Strip trailing punctuation characters from a URL extracted by _URL_RE."""
+    return _TRAIL_PUNCT_RE.sub("", raw)
+
+
+# Sentence boundary: punctuation followed by whitespace and an uppercase letter/digit
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9])")
+
+
+def _first_sentence(text, max_chars=120):
+    """Return the first sentence of text, at most max_chars characters.
+
+    Splits on sentence-ending punctuation followed by whitespace + uppercase/digit
+    so that abbreviations like a.m., p.m., or 2-1-1 are not treated as sentence ends.
+    If the first sentence exceeds max_chars, the trailing clause after the last comma
+    is removed first (e.g. ", which EDD describes as…" is dropped).  Only if the result
+    is still over max_chars is it cut at the last word boundary (with "…" appended).
+    """
+    first = _SENT_SPLIT_RE.split(text.strip(), maxsplit=1)[0]
+    if len(first) <= max_chars:
+        return first
+    # Try dropping the trailing comma clause
+    shorter = first.rsplit(",", 1)[0]
+    if len(shorter) <= max_chars:
+        return shorter
+    # Final fallback: hard cut at word boundary
+    cut = shorter[:max_chars].rsplit(None, 1)[0]
+    return cut + "…"
 
 
 def _next_step_contacts(contacts):
     """
     Return at most 2 contact snippets for next_step (v0.7+):
     1. first online application method (URL or "online" in value)
-       When it has a URL, format as "Apply online: <url> (checked Mon D)."
+       When it has a URL, format as "Apply online: <clean url> (checked Mon D)."
     2. first phone contact (phone pattern in value)
-    Each non-URL item is "(value) (checked Mon D)."
+    Each non-URL item uses only the first sentence (≤ 120 chars) of the value.
     """
     _phone_re = re.compile(r"\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}|\b2-1-1\b|\b211\b", re.I)
     _online_re = re.compile(r"https?://|online", re.I)
@@ -213,9 +260,9 @@ def _next_step_contacts(contacts):
         d = datetime.strptime(item["checked_at"], "%Y-%m-%d")
         url_m = _URL_RE.search(item["value"]) if item["label"] == "How to apply" else None
         if url_m:
-            snippets.append(f"Apply online: {url_m.group(0)} (checked {d:%b} {d.day}).")
+            snippets.append(f"Apply online: {_clean_url(url_m.group(0))} (checked {d:%b} {d.day}).")
         else:
-            snippets.append(f"{item['value']} (checked {d:%b} {d.day}).")
+            snippets.append(f"{_first_sentence(item['value'])} (checked {d:%b} {d.day}).")
     return snippets
 
 
@@ -402,8 +449,12 @@ def agent_8(request):
         if m and not is_closed:
             contacts = _build_contacts(claims, a["program_id"], evidence_records)
             snippets = _next_step_contacts(contacts)
-            if snippets:
-                next_step = next_step + " " + " ".join(snippets)
+            for snippet in snippets:
+                # Only append a snippet if the whole snippet fits within the 250-char budget
+                candidate = next_step + " " + snippet
+                if len(candidate) <= 250:
+                    next_step = candidate
+            if contacts:
                 all_refs = [r for item in contacts for r in item["evidence_refs"]]
                 a = dict(a, evidence_refs=list(dict.fromkeys(a["evidence_refs"] + all_refs)))
         else:
