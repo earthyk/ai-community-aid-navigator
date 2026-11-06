@@ -47,20 +47,21 @@ def assemble(meta, ev):
 programs, evidence = [], []
 
 # ---------------------------------------------------------------- 1. CalFresh (v0.1 + Slav's fix)
-old = json.load(open(os.path.join(HERE, "calfresh_v0.1.json"), encoding="utf-8"))
+with open(os.path.join(HERE, "calfresh_v0.1.json"), encoding="utf-8") as f:
+    old = json.load(f)
 cf_ev = old["evidence_records"]
 for e in cf_ev:  # Slav, Oct 24: recheck date for the ABAWD waiver list
     if e["evidence_id"] == "ev_calfresh_020":
         e["notes"] = ("Based on absence from both published lists. RECHECK BY 2026-11-02 (first business day after the "
                       "Nov 1, 2025 - Oct 31, 2026 list ends): confirm the Nov 1, 2026 - Oct 31, 2027 list on the CDSS page is "
                       "unchanged and Sacramento is still not listed. Next recheck after that: 2027-11-01.")
-        if True:  # Nov 2 recheck (published)
-            SUPERSEDED.append(dict(e))
-            e["checked_at"], e["verification_status"] = NOV2_T, NOV2_STATUS
-            e["source_url"] = "https://cdss.ca.gov/inforesources/cdss-programs/calfresh/able-bodied-adults-without-dependents"  # Slav, Nov 3: page with the 2026-2027 list
-            e["notes"] = ("Rechecked " + NOV2_T[:10] + ": "
-                          + "the Nov 1, 2026 - Oct 31, 2027 waiver list on the CDSS page does not include Sacramento County. "
-                          "Next recheck: 2027-11-01.")
+        # Nov 2 recheck (published)
+        SUPERSEDED.append(dict(e))
+        e["checked_at"], e["verification_status"] = NOV2_T, NOV2_STATUS
+        e["source_url"] = "https://cdss.ca.gov/inforesources/cdss-programs/calfresh/able-bodied-adults-without-dependents"  # Slav, Nov 3: page with the 2026-2027 list
+        e["notes"] = ("Rechecked " + NOV2_T[:10] + ": "
+                      + "the Nov 1, 2026 - Oct 31, 2027 waiver list on the CDSS page does not include Sacramento County. "
+                      "Next recheck: 2027-11-01.")
 PID = "prog_food_calfresh_sac_001"
 T = "2026-10-22T19:50:00-07:00"
 DHA = ("https://ha.saccounty.gov/us/en/benefits/CalFresh.html", "CalFresh | Sacramento County Department of Human Assistance ('SAR 7 Information' section)", "county_operator_local_intake", T)
@@ -162,29 +163,29 @@ sj_ev.append(ev_row("ev_sjhap_022", PID, "availability",
                     "Reopening date for the closure in ev_sjhap_019 (same page). Shared test case: rent due Nov 1 is BEFORE this date, "
                     "so the plan must say 'reopens Nov 2, after your Nov 1 date'. Exact page wording (rechecked Oct 25)."))
 sj_availability = "temporarily_closed"
-if True:  # Nov 2 reopening (published): new IDs replace the October claims; old rows go to navigator/kb/history
-    # Page text checked Nov 2, 2026 15:30 PT: the October 'funds exhausted' / 'return on November 2nd' paragraph is gone,
-    # the delivery and 'hear back within two weeks' sentences are gone, and an 'APPLY HERE' link to an online form appeared.
-    SJ2 = (SJ[0], "Housing Assistance Program | Saint John's Program for Real Change (page text as published, checked Nov 2, 2026)", SJ[2], NOV2_T)
-    pending = ""
-    replace = {"ev_sjhap_014": ev_row("ev_sjhap_020", PID, "application_method[0]",
-                                      "APPLY HERE (https://wkf.ms/4tjLVzi)", SJ2, "2026-11-02",
-                                      "Verbatim link text from the page; the link opens the online application form. Replaces ev_sjhap_014 ('return back to this page on Monday, November 2nd'). The online form link appeared on the page on Nov 2. Rent in the Nov 1 test case was due before this date.", NOV2_STATUS),
-               "ev_sjhap_019": ev_row("ev_sjhap_021", PID, "availability",
-                                      "APPLY HERE", SJ2, "2026-11-02",
-                                      "Verbatim link text, shown on the page on Nov 2, 2026. INFERENCE: availability = confirmed_open is inferred from what changed on the page: "
-                                      "the October notice ('We regret to announce that all of the funds for October 2026 have been exhausted...') is no longer shown, "
-                                      "and an 'APPLY HERE' link to the online application form is. The page has no sentence stating that applications are open. "
-                                      "Published status only, not a funding guarantee. Replaces ev_sjhap_019 and ev_sjhap_022.", NOV2_STATUS),
-               "ev_sjhap_022": None,  # reopening-date row: superseded by ev_sjhap_021 (same date)
-               "ev_sjhap_015": None,  # 'delivered by the middle to end of November': sentence no longer on the page
-               "ev_sjhap_018": None}  # 'hear back within two weeks' (October applicants): sentence no longer on the page
-    for e in sj_ev:  # contact[1] note said no online form was published; that changed on Nov 2
-        if e["evidence_id"] == "ev_sjhap_017":
-            e["notes"] = "Online application form: see application_method[0] (added to the page on Nov 2, 2026). No email is published."
-    SUPERSEDED += [e for e in sj_ev if e["evidence_id"] in replace]
-    sj_ev = [replace.get(e["evidence_id"], e) for e in sj_ev if replace.get(e["evidence_id"], e) is not None]
-    sj_availability = "confirmed_open"
+# Nov 2 reopening (published): new IDs replace the October claims; old rows go to navigator/kb/history
+# Page text checked Nov 2, 2026 15:30 PT: the October 'funds exhausted' / 'return on November 2nd' paragraph is gone,
+# the delivery and 'hear back within two weeks' sentences are gone, and an 'APPLY HERE' link to an online form appeared.
+SJ2 = (SJ[0], "Housing Assistance Program | Saint John's Program for Real Change (page text as published, checked Nov 2, 2026)", SJ[2], NOV2_T)
+pending = ""
+replace = {"ev_sjhap_014": ev_row("ev_sjhap_020", PID, "application_method[0]",
+                                  "APPLY HERE (https://wkf.ms/4tjLVzi)", SJ2, "2026-11-02",
+                                  "Verbatim link text from the page; the link opens the online application form. Replaces ev_sjhap_014 ('return back to this page on Monday, November 2nd'). The online form link appeared on the page on Nov 2. Rent in the Nov 1 test case was due before this date.", NOV2_STATUS),
+           "ev_sjhap_019": ev_row("ev_sjhap_021", PID, "availability",
+                                  "APPLY HERE", SJ2, "2026-11-02",
+                                  "Verbatim link text, shown on the page on Nov 2, 2026. INFERENCE: availability = confirmed_open is inferred from what changed on the page: "
+                                  "the October notice ('We regret to announce that all of the funds for October 2026 have been exhausted...') is no longer shown, "
+                                  "and an 'APPLY HERE' link to the online application form is. The page has no sentence stating that applications are open. "
+                                  "Published status only, not a funding guarantee. Replaces ev_sjhap_019 and ev_sjhap_022.", NOV2_STATUS),
+           "ev_sjhap_022": None,  # reopening-date row: superseded by ev_sjhap_021 (same date)
+           "ev_sjhap_015": None,  # 'delivered by the middle to end of November': sentence no longer on the page
+           "ev_sjhap_018": None}  # 'hear back within two weeks' (October applicants): sentence no longer on the page
+for e in sj_ev:  # contact[1] note said no online form was published; that changed on Nov 2
+    if e["evidence_id"] == "ev_sjhap_017":
+        e["notes"] = "Online application form: see application_method[0] (added to the page on Nov 2, 2026). No email is published."
+SUPERSEDED += [e for e in sj_ev if e["evidence_id"] in replace]
+sj_ev = [replace.get(e["evidence_id"], e) for e in sj_ev if replace.get(e["evidence_id"], e) is not None]
+sj_availability = "confirmed_open"
 p, e = assemble({"program_id": PID, "program_name": "Housing Assistance Program", "organization": "Saint John's Program for Real Change",
                  "category": "housing_assistance", "subcategory": "rental_assistance", "geography": ["Sacramento County"],
                  "availability": sj_availability, "verification_status": "verified"}, sj_ev)
@@ -227,9 +228,11 @@ programs.append(p); evidence += e
 out = {"schema_version": "1.0", "note": "Contracts v1.1. Nov 2, 2026 update published. Built by navigator/kb/tools/build_kb.py.",
        "program_records": programs, "evidence_records": evidence}
 target = os.path.join(KB_DIR, "kb_sacramento.json")
-json.dump(out, open(target, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+with open(target, "w", encoding="utf-8") as f:
+    json.dump(out, f, indent=2, ensure_ascii=False)
 # History is rebuilt from scratch every run (no appending), so rebuilding never duplicates rows.
 hist = os.path.join(KB_DIR, "history", "superseded_evidence.json")
 os.makedirs(os.path.dirname(hist), exist_ok=True)
-json.dump([dict(r, superseded_at=NOV2_T) for r in SUPERSEDED], open(hist, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+with open(hist, "w", encoding="utf-8") as f:
+    json.dump([dict(r, superseded_at=NOV2_T) for r in SUPERSEDED], f, indent=2, ensure_ascii=False)
 print(f"{len(programs)} programs, {len(evidence)} evidence records -> navigator/kb/kb_sacramento.json")
