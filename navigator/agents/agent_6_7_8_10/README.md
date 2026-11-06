@@ -57,7 +57,7 @@ Each appended item is followed by `"(checked Mon D)."` using the portable date h
 | agent_6_7_8_10.py | The component |
 | tests/agent_6_7_8_10/run_tests.py | Runs 69 integration checks (writes navigator/samples/agent_6_7_8_10/ only with --save) |
 | tests/agent_6_7_8_10/test_pr11_regression.py | 9 KB-based regression tests from PR #11 |
-| tests/agent_6_7_8_10/test_pr2_regression.py | 16 regression tests for PR #2 audit items (A6-01 to A6-04, A7-01 to A7-03, A10-02, C-OD2) |
+| tests/agent_6_7_8_10/test_pr2_regression.py | 20 regression tests for PR #2 audit items (A6-01 to A6-04, A7-01 to A7-03, A10-02, C-OD2) |
 | tests/agent_6_7_8_10/fixtures/ | Slav's test files (Agent 6 Sacramento input, Agent 10 mixed plan) |
 | tests/agent_6_7_8_10/mock_input_v0.2.json | Our own mock data for the same case |
 | navigator/samples/agent_6_7_8_10/ | Example AgentResult JSON for every agent, including full Action Plans |
@@ -67,7 +67,7 @@ Each appended item is followed by `"(checked Mon D)."` using the portable date h
 1. `python3 tests/agent_6_7_8_10/run_tests.py`
 2. Expected last line: `69 of 69 checks passed`
 3. `python3 -m unittest discover -s tests -t .`
-4. Expected: 101 tests, 1 pre-existing `test_builders` failure (KB availability field, waiting on update)
+4. Expected: 105 tests, 1 pre-existing `test_builders` failure (KB availability field, waiting on update)
 
 Tested on macOS, Python 3.14.3.  Standard Python 3 only — no extra packages.
 

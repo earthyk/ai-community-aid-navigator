@@ -117,9 +117,30 @@ def _run10(plan, needs, matches, checked_claims=None, evidence_records=None,
 # A6-01: Multiple needs – one resource serves several need_ids
 # ---------------------------------------------------------------------------
 
+def _run6_and_8(needs, matches, checked_claims=None, program_availability=None,
+                evidence_records=None, timing=None):
+    """Run agent_6 then agent_8 and return (actions, cards)."""
+    acts = _run6(needs, matches, checked_claims=checked_claims,
+                 program_availability=program_availability,
+                 evidence_records=evidence_records, timing=timing)
+    payload = {
+        "proposed_actions": acts,
+        "needs": needs,
+        "matches": matches,
+        "checked_claims": checked_claims or [],
+        "evidence_records": evidence_records or [],
+        "plan_version": "plan_test",
+    }
+    result = handle(_req("agent_8", payload))["result"]
+    return acts, result["action_cards"]
+
+
 class TestA601MultipleNeeds(unittest.TestCase):
-    """A resource serving need_A and need_B must not leave either in coverage_gaps,
-    regardless of the order in which need_ids appear in the match."""
+    """A resource serving need_A and need_B must:
+    - produce one action per need_id in agent_6 (no need_ids key on any action)
+    - produce one merged card in agent_8 with both needs in related_need_ids
+    - coverage must be the same when input order is reversed
+    """
 
     def _run(self, need_ids_order):
         needs = [
@@ -127,28 +148,53 @@ class TestA601MultipleNeeds(unittest.TestCase):
             _need("need_B", category="food_assistance", subcategory="calfresh_benefits"),
         ]
         matches = [_match("PROG-MULTI", need_ids_order, subcategory="food_pantry")]
-        # The action need_id is always the first in need_ids_order, but coverage
-        # must include ALL need_ids.
+        acts, cards = _run6_and_8(needs, matches)
+        # Coverage from actions (each has a single need_id per contract 4.6).
+        covered_by_actions = {a["need_id"] for a in acts if a.get("need_id")}
+        # Coverage from the merged card's related_need_ids.
+        covered_by_card = {n for c in cards for n in c.get("related_need_ids", [])}
+        return acts, cards, covered_by_actions, covered_by_card
+
+    def test_no_need_ids_field_on_actions(self):
+        """Contract 4.6: actions must not carry a need_ids (plural) field."""
+        needs = [
+            _need("need_A", category="food_assistance", subcategory="food_pantry"),
+            _need("need_B", category="food_assistance", subcategory="calfresh_benefits"),
+        ]
+        matches = [_match("PROG-MULTI", ["need_A", "need_B"], subcategory="food_pantry")]
         acts = _run6(needs, matches)
-        covered = {nid for a in acts for nid in a.get("need_ids", [a["need_id"]])}
-        gaps_from_issues = None  # agent_6 issues are separate; check covered set
-        return covered
+        for a in acts:
+            self.assertNotIn("need_ids", a,
+                             f"Action {a['action_id']} must not have a need_ids field: {list(a)}")
 
-    def test_forward_order_covers_both_needs(self):
-        covered = self._run(["need_A", "need_B"])
-        self.assertIn("need_A", covered)
-        self.assertIn("need_B", covered)
+    def test_card_lists_both_needs_forward(self):
+        """Agent 8 merges the two actions into one card with both need_ids."""
+        _, cards, _, covered_by_card = self._run(["need_A", "need_B"])
+        self.assertIn("need_A", covered_by_card)
+        self.assertIn("need_B", covered_by_card)
 
-    def test_reversed_order_covers_both_needs(self):
-        covered = self._run(["need_B", "need_A"])
-        self.assertIn("need_A", covered)
-        self.assertIn("need_B", covered)
+    def test_card_lists_both_needs_reversed(self):
+        _, cards, _, covered_by_card = self._run(["need_B", "need_A"])
+        self.assertIn("need_A", covered_by_card)
+        self.assertIn("need_B", covered_by_card)
+
+    def test_forward_order_covers_both_needs_via_actions(self):
+        _, _, covered_by_actions, _ = self._run(["need_A", "need_B"])
+        self.assertIn("need_A", covered_by_actions)
+        self.assertIn("need_B", covered_by_actions)
+
+    def test_reversed_order_covers_both_needs_via_actions(self):
+        _, _, covered_by_actions, _ = self._run(["need_B", "need_A"])
+        self.assertIn("need_A", covered_by_actions)
+        self.assertIn("need_B", covered_by_actions)
 
     def test_same_coverage_regardless_of_order(self):
-        covered_fwd = self._run(["need_A", "need_B"])
-        covered_rev = self._run(["need_B", "need_A"])
-        self.assertEqual(covered_fwd, covered_rev,
-                         "Coverage must not change when need_ids order is reversed")
+        _, _, cov_fwd, card_fwd = self._run(["need_A", "need_B"])
+        _, _, cov_rev, card_rev = self._run(["need_B", "need_A"])
+        self.assertEqual(cov_fwd, cov_rev,
+                         "Action coverage must not change when need_ids order is reversed")
+        self.assertEqual(card_fwd, card_rev,
+                         "Card coverage must not change when need_ids order is reversed")
 
 
 # ---------------------------------------------------------------------------
@@ -494,13 +540,15 @@ class TestA1002FalseCoverage(unittest.TestCase):
 
 # ---------------------------------------------------------------------------
 # C-OD2: Overdue rent + food need → housing action first
+#         (and: no overdue signal → normal sort order, NOT forced housing-first)
 # ---------------------------------------------------------------------------
 
 class TestCOD2OverdueRentFoodOrdering(unittest.TestCase):
-    """Overdue rent (immediate urgency, housing) with a food need:
-    housing action must come before food action."""
+    """Housing goes before food ONLY when the case shows overdue rent (or an
+    eviction/utility-shutoff notice).  Without that signal the sort must use
+    the normal A6-03 order (deadline, target date, processing time)."""
 
-    def test_housing_before_food_with_overdue_rent(self):
+    def _make_needs_matches(self):
         needs = [
             _need("need_housing", category="housing_assistance",
                   subcategory="rental_assistance", urgency="immediate"),
@@ -508,23 +556,57 @@ class TestCOD2OverdueRentFoodOrdering(unittest.TestCase):
                   subcategory="food_pantry", urgency="immediate"),
         ]
         matches = [
-            _match("PROG-HOUSING", ["need_housing"],
-                   subcategory="rental_assistance"),
+            _match("PROG-HOUSING", ["need_housing"], subcategory="rental_assistance"),
             _match("PROG-FOOD", ["need_food"], subcategory="food_pantry"),
         ]
         avail = [_open_avail("PROG-HOUSING"), _open_avail("PROG-FOOD")]
-        # Supply matches in food-first order to prove sorting overrides input order.
+        return needs, matches, avail
+
+    def test_housing_before_food_with_overdue_rent(self):
+        """Overdue rent date in facts → housing sorts first."""
+        needs, matches, avail = self._make_needs_matches()
+        # rent_due_date in the past → overdue signal
+        overdue_facts = [{"fact_id": "f1", "field": "rent_due_date",
+                          "value": "2026-10-01",
+                          "confirmation_status": "confirmed",
+                          "source": "user_statement", "time_context": None}]
+        payload = {
+            "needs": needs,
+            "matches": [matches[1], matches[0]],  # food first in input
+            "checked_claims": [],
+            "program_availability": avail,
+            "evidence_records": [],
+            "timing": [],
+            "case_facts": overdue_facts,
+        }
+        acts = handle(_req("agent_6", payload))["result"]["proposed_actions"]
+        pids = [a["program_id"] for a in acts if a["program_id"]]
+        housing_idx = pids.index("PROG-HOUSING")
+        food_idx = pids.index("PROG-FOOD")
+        self.assertLess(
+            housing_idx, food_idx,
+            f"Housing must come before food when rent is overdue; got {pids}",
+        )
+
+    def test_no_overdue_signal_does_not_force_housing_first(self):
+        """Without an overdue-housing signal, housing does NOT jump ahead of food."""
+        needs, matches, avail = self._make_needs_matches()
+        # No case_facts with rent_due_date or notice fields → no overdue signal.
         acts = _run6(
             needs,
             [matches[1], matches[0]],  # food first in input
             program_availability=avail,
         )
         pids = [a["program_id"] for a in acts if a["program_id"]]
-        housing_idx = pids.index("PROG-HOUSING")
+        # With equal urgency and no dates, order should follow input (stable sort).
+        # The key assertion: housing must NOT be forced ahead of food.
+        # (Both are "immediate" → both land in "first"; without the signal the
+        #  sort key treats them equally, so input order is preserved.)
         food_idx = pids.index("PROG-FOOD")
+        housing_idx = pids.index("PROG-HOUSING")
         self.assertLess(
-            housing_idx, food_idx,
-            f"Housing action must come before food when rent is overdue; got {pids}",
+            food_idx, housing_idx,
+            f"Without an overdue signal, food-first input must stay food-first; got {pids}",
         )
 
 
