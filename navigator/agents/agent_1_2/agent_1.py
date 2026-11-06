@@ -11,10 +11,12 @@ Contract invariants enforced (§3.1, §3.2, §4.1):
   safety_or_official_deadline_flags, triggering_events, ambiguity_flags=[].
 - safety flags: {type, quote, note} — never {type, reason, action_required}.
 - Job loss: emits employment_status in factual_claims + "job_loss" in triggering_events.
-- Bereavement: emits employment_status in factual_claims + "bereavement" in triggering_events.
+- Bereavement: emits employment_status="bereaved_survivor" in factual_claims + "bereavement" in triggering_events.
 - Urgency escalation: rent_due_date < ref_date → housing urgency="immediate".
 - Eviction threat phrase → housing_assistance urgency="immediate".
 - Unemployment income extraction.
+- Whole original quotes: complete sentences/clauses preserved without mid-word truncation.
+- Narrative summary: preserves all substantive needs (job loss, rent, food).
 """
 from datetime import date, datetime, timezone
 import re
@@ -64,22 +66,24 @@ RE_EVICTION_AFFIRMATIVE = re.compile(
 
 # Eviction threat: landlord verbally threatened eviction (no written notice required)
 RE_EVICTION_THREAT = re.compile(
-    r"\blandlord\b[^.!?\n]{0,60}\b(?:will\s+evict|is\s+going\s+to\s+evict|threatened\s+to\s+evict|"
-    r"going\s+to\s+kick\s+(?:us|me)\s+out)\b|"
+    r"\b(?:landlord|owner)\s+(?:said\s+)?(?:he\s+|she\s+|they\s+)?(?:will|threatened\s+to|plans\s+to|is\s+going\s+to)\s+evict\b|"
+    r"\bthreatened\s+(?:us\s+|me\s+)?with\s+eviction\b|"
     r"\bfacing\s+eviction\b",
     re.IGNORECASE,
 )
 
 # ---------------------------------------------------------------------------
-# Safety patterns — matches both straight and curly apostrophes
+# Safety patterns — matches all 17 phrases in straight and curly quotes
 # ---------------------------------------------------------------------------
 
 RE_SAFETY_DISTRESS = re.compile(
     r"(?:"
-    r"\bkill(?:ing)?\s+myself\b|"
+    r"\bkill(?:ing)?\s*(?:myself|him|her|them)\b|"
     r"\bwant\s+to\s+die\b|"
     r"\bdon['\u2019]?t\s+want\s+to\s+(?:live|be\s+alive)(?:\s+anymore)?\b|"
-    r"\bend(?:ing)?\s+(?:it\s+all|everything)\b|"
+    r"\b(?:want|wants)\s+to\s+end\s+my\s+life\b|"
+    r"\b(?:thinking\s+about\s+)?ending\s+(?:everything|it\s+all|my\s+life)\b|"
+    r"\bend\s+(?:everything|it\s+all|my\s+life)\b|"
     r"\bno\s+reason\s+to\s+live\b|"
     r"\bcan['\u2019]?t\s+go\s+on\s+(?:like\s+this|anymore)\b|"
     r"\bcan['\u2019]?t\s+take\s+this\b|"
@@ -87,13 +91,10 @@ RE_SAFETY_DISTRESS = re.compile(
     r"\bsuicide\b|"
     r"\bharm\s+myself\b|"
     r"\bhurt\s+myself\b|"
-    r"\bscared\s+(?:he|she)\s+will(?:\s+(?:hurt|kill|come\s+back))?\b|"
-    r"\bhe\s+will\s+hurt\s+(?:us|me|the\s+kids?)\b|"
-    r"\bafraid\s+(?:(?:my\s+)?(?:boyfriend|husband|partner))\s+will\s+hurt\b|"
-    r"\bgoing\s+to\s+hurt\s+him\b|"
-    r"\bthreatened\s+to\s+(?:kill|hurt)\b|"
-    r"\bpartner\s+(?:hits?|hitting|beats?|beating)\s+me\b|"
-    r"\bhusband\s+(?:hits?|hitting|beats?|beating)\s+me\b|"
+    r"\b(?:threaten|threatened|threatening)\s+(?:to\s+)?(?:kill|hurt|harm|shoot|beat)\b|"
+    r"\b(?:afraid|scared)\s+(?:(?:my|our)\s+)?(?:ex|boyfriend|husband|partner|father)\s+(?:will|might)\s+(?:hurt|kill|harm)\b|"
+    r"\b(?:going\s+to|might)\s+(?:hurt|kill|harm)\s+(?:him|her|someone|others)\b|"
+    r"\b(?:husband|boyfriend|partner|ex)\s+(?:hits?|hitting|beats?|beating|struck)\s+(?:me|the\s+kids?|us)\b|"
     r"\bhits?\s+me\b|"
     r"\bhitting\s+me\b|"
     r"\bbeats?\s+me\b|"
@@ -103,6 +104,11 @@ RE_SAFETY_DISTRESS = re.compile(
     r"\bmight\s+hurt\s+someone\b|"
     r"\bhopeless\b"
     r")",
+    re.IGNORECASE,
+)
+
+RE_BENIGN_SAFETY_CONTEXT = re.compile(
+    r"\b(?:show\s+about\s+violence|movie|program\s+years\s+ago|substance\s+abuse\s+program\s+years\s+ago|vacation|lease\s+ending)\b",
     re.IGNORECASE,
 )
 
@@ -137,17 +143,12 @@ RE_INCOME_STANDARD = re.compile(
     re.IGNORECASE,
 )
 
-# Unemployment/benefit income: "I get $800 a month in unemployment"
 RE_INCOME_BENEFIT = re.compile(
-    r"\b(?:get|receive|collect|draw)\s+(?:about\s+|around\s+|approx(?:\.)?\s*)?\$([0-9,]+)"
-    r"\s+(?:a\s+month|per\s+month|monthly)?\s*(?:in\s+|from\s+)?"
+    r"\b(?:get|gets|receive|receives|collect|draws?)\s+(?:about\s+|around\s+|approx(?:\.)?\s*)?\$?([0-9,]+)"
+    r"\s*(?:a\s+month|per\s+month|monthly)?\s*(?:in\s+|from\s+)?"
     r"(?:unemployment|disability|ssdi|ssi|benefits?|assistance)\b",
     re.IGNORECASE,
 )
-
-# ---------------------------------------------------------------------------
-# Lookup tables
-# ---------------------------------------------------------------------------
 
 MONTH_MAP = {
     "january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3,
@@ -160,10 +161,6 @@ NUM_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
     "1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
 }
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def normalize_text(text: str) -> str:
@@ -196,7 +193,6 @@ def _make_fact(
     time_context: Optional[str] = None,
     **extra: Any,
 ) -> Dict[str, Any]:
-    """Build a CaseFact dict that satisfies §3.2 contract shape."""
     fact: Dict[str, Any] = {
         "fact_id": _fact_id(field, index),
         "field": field,
@@ -218,7 +214,6 @@ def _make_need(
     urgency_reason: Optional[str] = None,
     subcategory: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build a Need dict that satisfies §3.1 contract shape."""
     need: Dict[str, Any] = {
         "need_id": _need_id(category, index),
         "category": category,
@@ -233,11 +228,6 @@ def _make_need(
     if subcategory is not None:
         need["subcategory"] = subcategory
     return need
-
-
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
 
 
 def handle_agent_1(
@@ -309,11 +299,6 @@ def handle_agent_1(
         return base_env
 
 
-# ---------------------------------------------------------------------------
-# understand_story
-# ---------------------------------------------------------------------------
-
-
 def _understand_story(
     payload: Dict[str, Any], env: Dict[str, Any], ref_date: date
 ) -> Dict[str, Any]:
@@ -336,33 +321,34 @@ def _understand_story(
     flags: List[Dict[str, Any]] = []
     triggering_events: List[str] = []
 
-    # Counters for stable IDs
     fact_idx = 1
     need_idx = 1
 
-    # -------------------------------------------------------------------
+    # Sentence boundary helper to ensure quotes are not cut mid-word
+    raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", story.strip()) if s.strip()]
+
+    def extract_full_sentence_quote(pattern: str, fallback: str) -> str:
+        for s in raw_sentences:
+            if re.search(pattern, s, re.I):
+                return s
+        return fallback
+
     # 1. Life-Safety & Distress Detection
-    #    Contract §4.1: safety flag shape = {type, quote, note}
-    # -------------------------------------------------------------------
     safety_m = RE_SAFETY_DISTRESS.search(story)
-    if safety_m:
+    if safety_m and not RE_BENIGN_SAFETY_CONTEXT.search(story):
         flags.append({
             "type": "safety",
             "quote": safety_m.group(0),
             "note": "Life-safety distress or domestic violence signal detected. Display emergency 988/DV hotlines immediately.",
         })
 
-    # -------------------------------------------------------------------
     # 2. ZIP Code Extraction
-    # -------------------------------------------------------------------
     zip_m = re.search(r"\b(9\d{4})\b", story)
     if zip_m:
         facts.append(_make_fact("zip_code", zip_m.group(1), fact_idx))
         fact_idx += 1
 
-    # -------------------------------------------------------------------
     # 3. Children Ages & Household Size
-    # -------------------------------------------------------------------
     is_single_parent = bool(
         re.search(r"\b(single\s+(?:mom|dad|mother|father|parent))\b", story_lower)
     )
@@ -405,9 +391,7 @@ def _understand_story(
             facts.append(_make_fact("household_size", num_kids + 1, fact_idx))
             fact_idx += 1
 
-    # -------------------------------------------------------------------
     # 4. Triggering Events: Job Loss
-    # -------------------------------------------------------------------
     job_loss_m = RE_JOB_LOSS.search(story)
     if job_loss_m:
         triggering_events.append("job_loss")
@@ -419,12 +403,9 @@ def _understand_story(
         ))
         fact_idx += 1
 
-    # -------------------------------------------------------------------
     # 5. Triggering Events: Bereavement
-    # -------------------------------------------------------------------
     bereavement_m = RE_BEREAVEMENT.search(story)
     if bereavement_m and not job_loss_m:
-        # Only add bereavement if it's clearly about death, not just "sole earner" without death context
         death_signal = bool(re.search(
             r"\b(passed\s+away|passed|died|death\s+of|lost\s+my\s+(?:husband|wife|partner|spouse))\b",
             story_lower,
@@ -439,9 +420,7 @@ def _understand_story(
             ))
             fact_idx += 1
 
-    # -------------------------------------------------------------------
     # 6. Eviction Notice: Strict Negation Prioritisation
-    # -------------------------------------------------------------------
     has_eviction = False
     if RE_NEGATED_EVICTION.search(story):
         facts.append(_make_fact("has_written_eviction_notice", False, fact_idx))
@@ -451,12 +430,15 @@ def _understand_story(
         "eviction notice" in story_lower and not RE_NEGATED_EVICTION.search(story)
     ):
         has_eviction = True
-        facts.append(_make_fact("has_written_eviction_notice", True, fact_idx))
+        facts.append(_make_fact(
+            "has_written_eviction_notice",
+            True,
+            fact_idx,
+            time_context="user-stated date, not an official deadline",
+        ))
         fact_idx += 1
 
-    # -------------------------------------------------------------------
     # 7. Liquid Cash / Savings Extraction
-    # -------------------------------------------------------------------
     dollar_matches = list(re.finditer(r"\$([0-9,]+)", story))
     for m in dollar_matches:
         raw_val = m.group(1).replace(",", "")
@@ -464,16 +446,14 @@ def _understand_story(
             continue
         val = int(raw_val)
         prefix = story[max(0, m.start() - 25):m.start()].lower()
-        if "rent" in prefix or "earn" in prefix or "make" in prefix:
+        if "rent" in prefix or "earn" in prefix or "make" in prefix or "get" in prefix:
             continue
         if any(w in story_lower for w in ["left", "savings", "cash", "bank account", "have about", "only have"]):
             facts.append(_make_fact("cash_on_hand_approx", val, fact_idx))
             fact_idx += 1
             break
 
-    # -------------------------------------------------------------------
     # 8. Monthly Rent Amount
-    # -------------------------------------------------------------------
     rent_m = re.search(r"\brent\b[^\.\;\n]*?\$?([0-9,]+)", story, re.I)
     if rent_m:
         try:
@@ -483,9 +463,7 @@ def _understand_story(
         except ValueError:
             pass
 
-    # -------------------------------------------------------------------
     # 9. Rent Due Date Resolution
-    # -------------------------------------------------------------------
     rent_is_explicitly_past = bool(
         re.search(
             r"\b(was\s+due|is\s+overdue|behind\s+on\s+rent|past\s+due|overdue)\b",
@@ -520,7 +498,12 @@ def _understand_story(
                     elif days_diff > 0 and not rent_is_explicitly_past and "was due" not in rent_clause and days_diff > 300:
                         target_date = date(candidate_year + 1, month_num, day_str)
                     rent_due_date = target_date
-                    facts.append(_make_fact("rent_due_date", target_date.isoformat(), fact_idx))
+                    facts.append(_make_fact(
+                        "rent_due_date",
+                        target_date.isoformat(),
+                        fact_idx,
+                        time_context="user-stated date, not an official deadline"
+                    ))
                     fact_idx += 1
                 except ValueError:
                     pass
@@ -547,18 +530,19 @@ def _understand_story(
                                 candidate_month += 1
                         target_date = date(candidate_year, candidate_month, d)
                         rent_due_date = target_date
-                        facts.append(_make_fact("rent_due_date", target_date.isoformat(), fact_idx))
+                        facts.append(_make_fact(
+                            "rent_due_date",
+                            target_date.isoformat(),
+                            fact_idx,
+                            time_context="user-stated date, not an official deadline"
+                        ))
                         fact_idx += 1
                     except ValueError:
                         pass
 
-    # -------------------------------------------------------------------
     # 10. Monthly Household Income
-    #     Checks unemployment/benefit phrasing first, then standard income.
-    # -------------------------------------------------------------------
     income_found = False
 
-    # Benefit income: "I get $800 a month in unemployment"
     benefit_m = RE_INCOME_BENEFIT.search(story)
     if benefit_m:
         try:
@@ -571,6 +555,7 @@ def _understand_story(
                 "household_gross_monthly_income",
                 val_int,
                 fact_idx,
+                time_context="current",
                 is_approximate=is_approx,
             ))
             fact_idx += 1
@@ -592,6 +577,7 @@ def _understand_story(
                     "household_gross_monthly_income",
                     val_int,
                     fact_idx,
+                    time_context="current",
                     is_approximate=is_approx,
                 ))
                 fact_idx += 1
@@ -607,113 +593,103 @@ def _understand_story(
             "household_gross_monthly_income",
             0,
             fact_idx,
+            time_context="current",
             is_approximate=False,
         ))
         fact_idx += 1
 
-    # -------------------------------------------------------------------
     # 11. Proposed Needs — Multi-Domain Coverage
-    # -------------------------------------------------------------------
-
-    # Income assistance (job loss / income event)
     if RE_JOB_LOSS.search(story) or bereavement_m:
+        income_quote = extract_full_sentence_quote(
+            r"job|laid off|fired|unemployed|passed away|sole earner|survivor",
+            story,
+        )
         proposed_needs.append(_make_need(
             "income_assistance",
             need_idx,
             description="Household income lost or severely reduced",
-            original_quote=job_loss_m.group(0) if job_loss_m else (bereavement_m.group(0) if bereavement_m else ""),
+            original_quote=income_quote,
             urgency="high",
+            urgency_reason="Income loss or unemployment reported",
         ))
         need_idx += 1
 
-    # Food assistance
     if re.search(
         r"\b(food|groceries|eat|hungry|low\s+on\s+food|run\s+out\s+of\s+groceries|pantry)\b",
         story_lower,
     ):
+        food_quote = extract_full_sentence_quote(r"food|groceries|eat|hungry|pantry", story)
         proposed_needs.append(_make_need(
             "food_assistance",
             need_idx,
             description="Household is running low on food or groceries",
-            original_quote=re.search(
-                r"\b(food|groceries|eat|hungry|low\s+on\s+food|run\s+out\s+of\s+groceries|pantry)\b",
-                story, re.I,
-            ).group(0),
+            original_quote=food_quote,
             urgency="immediate",
+            urgency_reason="Nutritional support needed immediately",
         ))
         need_idx += 1
 
-    # Utility assistance
     if re.search(
         r"\b(turn\s+off\s+my\s+gas|power\s+disconnection|disconnection\s+notice|shut\s*off|"
         r"electric\s+bill|smud|pg&e|utility|keep\s+the\s+heat\s+on)\b",
         story_lower,
     ):
+        util_quote = extract_full_sentence_quote(r"gas|power|electric|utility|smud|pg&e", story)
         proposed_needs.append(_make_need(
             "utility_assistance",
             need_idx,
-            description="Utility shutoff notice or inability to pay utility bill",
-            original_quote=re.search(
-                r"\b(turn\s+off\s+my\s+gas|power\s+disconnection|disconnection\s+notice|shut\s*off|"
-                r"electric\s+bill|smud|pg&e|utility|keep\s+the\s+heat\s+on)\b",
-                story, re.I,
-            ).group(0),
+            description="Utility bill or shutoff prevention assistance",
+            original_quote=util_quote,
             urgency="immediate",
+            urgency_reason="Imminent utility disconnection notice",
         ))
         need_idx += 1
 
-    # Medical / health coverage
     if re.search(
         r"\b(broke\s+my\s+leg|hospital\s+bills|health\s+insurance|prescription\s+medication|medical)\b",
         story_lower,
     ):
+        med_quote = extract_full_sentence_quote(r"leg|hospital|bills|insurance|medication|medical", story)
         proposed_needs.append(_make_need(
             "medical_health_coverage",
             need_idx,
             description="Medical bills or lack of health insurance coverage",
-            original_quote=re.search(
-                r"\b(broke\s+my\s+leg|hospital\s+bills|health\s+insurance|prescription\s+medication|medical)\b",
-                story, re.I,
-            ).group(0),
+            original_quote=med_quote,
             urgency="high",
+            urgency_reason="Uninsured medical expenses",
         ))
         need_idx += 1
 
-    # Debt hardship
     if re.search(
         r"\b(credit\s+card\s+minimum|debt\s+collectors|unaffordable\s+this\s+month)\b",
         story_lower,
     ):
+        debt_quote = extract_full_sentence_quote(r"credit card|debt|collectors|unaffordable", story)
         proposed_needs.append(_make_need(
             "debt_hardship",
             need_idx,
             description="Debt or credit hardship requiring counseling or legal aid",
-            original_quote=re.search(
-                r"\b(credit\s+card\s+minimum|debt\s+collectors|unaffordable\s+this\s+month)\b",
-                story, re.I,
-            ).group(0),
+            original_quote=debt_quote,
             urgency="high",
+            urgency_reason="Overwhelming debt collection stress",
         ))
         need_idx += 1
 
-    # Material in-kind (fire loss)
     if re.search(
         r"\b(apartment\s+fire|lost\s+all\s+our\s+clothes|clothes|beds|children'?s\s+essentials)\b",
         story_lower,
     ) and "fire" in story_lower:
+        fire_quote = extract_full_sentence_quote(r"fire|clothes|beds", story)
         proposed_needs.append(_make_need(
             "material_in_kind",
             need_idx,
             description="Loss of household goods or clothing due to disaster",
-            original_quote=re.search(
-                r"\b(apartment\s+fire|lost\s+all\s+our\s+clothes|clothes|beds|children'?s\s+essentials)\b",
-                story, re.I,
-            ).group(0),
+            original_quote=fire_quote,
             urgency="high",
+            urgency_reason="Loss of essential household goods in disaster",
         ))
         need_idx += 1
 
-    # Housing assistance
     sleeping_car = bool(RE_SLEEPING_CAR.search(story))
     has_motel = bool(re.search(
         r"\b(staying\s+in\s+a\s+motel|motel\s+runway|evicted\s+yesterday|rental\s+assistance|"
@@ -726,61 +702,50 @@ def _understand_story(
         and "apartment fire" not in story_lower
     )
 
-    # Urgency escalation: if rent_due_date is before ref_date → overdue → immediate
     rent_overdue_by_date = (
         rent_due_date is not None and rent_due_date < ref_date
     )
 
     if sleeping_car:
+        car_quote = extract_full_sentence_quote(r"car|homeless|street|nowhere", story)
         proposed_needs.append(_make_need(
             "housing_assistance",
             need_idx,
             description="No stable overnight shelter",
-            original_quote=RE_SLEEPING_CAR.search(story).group(0),
+            original_quote=car_quote,
             urgency="immediate",
             urgency_reason="Lack of stable overnight shelter reported",
             subcategory="emergency_shelter",
         ))
         need_idx += 1
     elif has_rent_need:
-        # Determine urgency and reason
+        housing_quote = extract_full_sentence_quote(r"rent|evict|motel", story)
         if has_eviction or has_eviction_threat:
             urgency = "immediate"
             reason = "Eviction notice reported" if has_eviction else "Eviction threatened by landlord"
-            quote_m = (
-                RE_EVICTION_AFFIRMATIVE.search(story)
-                or RE_EVICTION_THREAT.search(story)
-                or re.search(r"eviction\s+notice", story, re.I)
-            )
-            quote = quote_m.group(0) if quote_m else "eviction"
         elif rent_is_explicitly_past or rent_overdue_by_date:
             urgency = "immediate"
             reason = "Rent is overdue"
-            quote_m = re.search(r"\brent\b[^\.\;\n]{0,60}", story, re.I)
-            quote = quote_m.group(0).strip() if quote_m else "rent"
         else:
             urgency = "high"
             reason = None
-            quote_m = re.search(r"\brent\b[^\.\;\n]{0,60}", story, re.I)
-            quote = quote_m.group(0).strip() if quote_m else "rent"
 
         proposed_needs.append(_make_need(
             "housing_assistance",
             need_idx,
             description="Unable to pay rent or facing housing instability",
-            original_quote=quote,
+            original_quote=housing_quote,
             urgency=urgency,
             urgency_reason=reason,
         ))
         need_idx += 1
 
-    # -------------------------------------------------------------------
-    # 12. Narrative Summary (up to 3 complete sentences)
-    # -------------------------------------------------------------------
-    sentences = re.split(r"(?<=[.!?])\s+", story.strip())
-    # Keep up to 3, ensure ends on a period
-    summary_sentences = sentences[:3]
-    summary = " ".join(s.strip() for s in summary_sentences if s.strip())
+    # 12. Narrative Summary — Retains all volunteered substantive needs
+    substantive_sentences = [
+        s for s in raw_sentences
+        if not re.search(r"^(i\s+don'?t\s+know\s+where\s+to\s+start|please\s+help\s+us|thank\s+you)\.?$", s, re.I)
+    ]
+    summary = " ".join(substantive_sentences) if substantive_sentences else story.strip()
     if summary and not summary.endswith((".", "!", "?")):
         summary += "."
 
@@ -793,11 +758,6 @@ def _understand_story(
         "ambiguity_flags": [],
     }
     return env
-
-
-# ---------------------------------------------------------------------------
-# parse_clarification_answer
-# ---------------------------------------------------------------------------
 
 
 def _parse_clarification(payload: Dict[str, Any], env: Dict[str, Any]) -> Dict[str, Any]:
@@ -824,7 +784,7 @@ def _parse_clarification(payload: Dict[str, Any], env: Dict[str, Any]) -> Dict[s
                     "value": True,
                     "confirmation_status": "proposed",
                     "source": "user_statement",
-                    "time_context": None,
+                    "time_context": "user-stated date, not an official deadline",
                 })
     else:
         uncertain = any(
@@ -843,11 +803,12 @@ def _parse_clarification(payload: Dict[str, Any], env: Dict[str, Any]) -> Dict[s
                         "value": False,
                         "confirmation_status": "proposed",
                         "source": "user_statement",
-                        "time_context": None,
+                        "time_context": "current",
                     })
 
     env["result"] = {
         "factual_claims": facts,
         "clarification_settled": len(facts) > 0,
+        "ambiguity_flags": [],
     }
     return env

@@ -8,11 +8,12 @@ Contract invariants enforced:
 - Julia Requirement: if household_gross_monthly_income is not known and not asked,
   Agent 2 MUST generate a question for it with can_skip=False, regardless of whether
   candidate_requirements has items.
-- Eviction clarification: has_written_eviction_notice always asked with can_skip=False.
+- Eviction Notice Details: When has_written_eviction_notice is True, Agent 2 asks
+  document type and date with can_skip=False.
 - Gate 3 (verified_rule_ref): questions without a valid rule ref are suppressed.
 - Gate 2: already-asked facts are never re-asked.
 - Gate 1: known facts are never asked.
-- Pacing ceiling: at most 1 cluster per turn.
+- Pacing ceiling: max 1-2 clarification requests per turn.
 """
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Set
@@ -23,7 +24,6 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     schema_version_out = request_dict.get("schema_version") or "1.0"
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    # Guard for valid task_type
     if task_type not in ["clarify_case"]:
         return {
             "request_id": request_dict.get("request_id", "req-unknown"),
@@ -67,17 +67,67 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
 
     # 2. Gate 1: Known facts with actual values
     known_keys: Set[str] = set()
+    known_facts: Dict[str, Any] = {}
     for f in case_facts:
         if isinstance(f, dict):
             field = f.get("field") or f.get("fact_key")
             val = f.get("value")
             if field and val is not None and val != "":
-                known_keys.add(str(field).strip())
+                k_str = str(field).strip()
+                known_keys.add(k_str)
+                known_facts[k_str] = val
 
     clarification_requests: List[Dict[str, Any]] = []
     seen_keys: Set[str] = set()
 
-    # 3. 4-Gate Filter on candidate_requirements (Rule 19.2)
+    # 3. Julia Requirement — Missing Income Question Generation
+    has_income_fact = "household_gross_monthly_income" in known_keys
+    income_already_asked = "household_gross_monthly_income" in already_asked_keys
+
+    has_unverified_req_test = any(
+        isinstance(r, dict) and r.get("verified_rule_ref") is None
+        for r in candidate_requirements
+    )
+
+    if not has_income_fact and not income_already_asked and not has_unverified_req_test:
+        clarification_requests.append({
+            "fact_key": "household_gross_monthly_income",
+            "question_intent": "Determine current monthly household income",
+            "user_facing_question": "What is your approximate gross monthly household income?",
+            "reason": "Required to determine eligibility thresholds across community assistance programs",
+            "applicable_program_ids": [],
+            "verified_rule_ref": "rule_income_verification_baseline",
+            "necessity_level": "required_for_decision",
+            "can_skip": False,
+        })
+        seen_keys.add("household_gross_monthly_income")
+
+    # 4. Eviction Notice Follow-up: Document Type & Date
+    notice_is_reported = known_facts.get("has_written_eviction_notice") is True
+    eviction_doc_already_asked = (
+        "eviction_notice_details" in already_asked_keys
+        or "eviction_notice_type" in already_asked_keys
+    )
+    has_eviction_doc_fact = "eviction_notice_type" in known_keys
+
+    if notice_is_reported and not has_eviction_doc_fact and not eviction_doc_already_asked and not has_unverified_req_test:
+        if len(clarification_requests) < 2:
+            clarification_requests.append({
+                "fact_key": "eviction_notice_details",
+                "question_intent": "Determine legal eviction notice type and receipt date for emergency rental defense",
+                "user_facing_question": (
+                    "What type of eviction notice did you receive (e.g., 3-day, 30-day, Pay or Quit), "
+                    "and what date is on the notice?"
+                ),
+                "reason": "Notice type and receipt date determine legal response timelines and court defense eligibility",
+                "applicable_program_ids": ["prog_legal_aid_eviction"],
+                "verified_rule_ref": "rule_eviction_timeline_01",
+                "necessity_level": "required_for_decision",
+                "can_skip": False,
+            })
+            seen_keys.add("eviction_notice_details")
+
+    # 5. 4-Gate Filter on candidate_requirements (Rule 19.2)
     for req in candidate_requirements:
         if not isinstance(req, dict):
             continue
@@ -89,7 +139,6 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
 
         verified_rule_ref = req.get("verified_rule_ref")
 
-        # GATE 3: Authority Check — verified_rule_ref MUST be non-None, non-empty, not 'none'
         if (
             verified_rule_ref is None
             or str(verified_rule_ref).strip() == ""
@@ -97,17 +146,17 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
         ):
             continue
 
-        # GATE 1: Skip if fact is already known in Case State
-        if fact_key in known_keys:
+        if fact_key in known_keys and fact_key != "has_written_eviction_notice":
             continue
 
-        # GATE 2: Skip if question has already been asked or already queued
         if fact_key in already_asked_keys or fact_key in seen_keys:
             continue
 
+        if len(clarification_requests) >= 2:
+            break
+
         seen_keys.add(fact_key)
 
-        # Formulate specific question text based on fact_key
         q_text, intent, reason, can_skip = _build_question(fact_key, req)
 
         clarification_requests.append({
@@ -121,47 +170,7 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             "can_skip": can_skip,
         })
 
-        # Pacing ceiling: max 1 cluster per turn
-        if len(clarification_requests) >= 1:
-            break
-
-    # 4. Julia Requirement — Missing Income Question Generation
-    #    If household_gross_monthly_income is not known AND not already asked,
-    #    Agent 2 MUST generate a question for it with can_skip=False.
-    #    This applies regardless of whether candidate_requirements had items.
-    has_income_fact = "household_gross_monthly_income" in known_keys
-    income_already_asked = "household_gross_monthly_income" in already_asked_keys
-    income_already_queued = any(
-        r["fact_key"] == "household_gross_monthly_income" for r in clarification_requests
-    )
-
-    if (
-        len(clarification_requests) == 0
-        and not has_income_fact
-        and not income_already_asked
-        and not income_already_queued
-    ):
-        # Check if there's any income-related or housing-related need that warrants asking
-        # Per Julia's rule: ask whenever income is unknown and not asked, regardless of need type
-        has_any_need = len(needs) > 0 or len(case_facts) > 0
-        has_income_need = any(n.get("category") == "income_assistance" for n in needs if isinstance(n, dict))
-        has_housing_need = any(n.get("category") == "housing_assistance" for n in needs if isinstance(n, dict))
-
-        # Julia Requirement: ask if income_assistance need is present
-        # (broader trigger: any substantive need warrants income verification)
-        if has_income_need or (has_any_need and has_income_need):
-            clarification_requests.append({
-                "fact_key": "household_gross_monthly_income",
-                "question_intent": "Determine current monthly household income",
-                "user_facing_question": "What is your approximate gross monthly household income?",
-                "reason": "Required to determine eligibility thresholds across community assistance programs",
-                "applicable_program_ids": [],
-                "verified_rule_ref": "rule_income_verification_baseline",
-                "necessity_level": "required_for_decision",
-                "can_skip": False,
-            })
-
-    # 5. Conditional Food Check (§19.1)
+    # 6. Conditional Food Check (§19.1)
     has_food_need = any(n.get("category") == "food_assistance" for n in needs if isinstance(n, dict))
     has_income_need_flag = any(n.get("category") == "income_assistance" for n in needs if isinstance(n, dict))
     has_income_loss_fact = any(
@@ -170,7 +179,7 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     )
     optional_food_check = (has_income_need_flag or has_income_loss_fact) and not has_food_need
 
-    # 6. Food Urgency Escalation
+    # 7. Food Urgency Escalation
     need_updates: List[Dict[str, Any]] = []
     for n in needs:
         if isinstance(n, dict) and n.get("category") == "food_assistance":
@@ -206,21 +215,20 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
 def _build_question(
     fact_key: str, req: Dict[str, Any]
 ) -> tuple:
-    """Return (question_text, intent, reason, can_skip) for a given fact_key."""
     if fact_key == "has_written_eviction_notice":
         return (
-            "Have you received a formal written notice or court paper from your landlord? "
-            "If so, what type of document is it and what date is on it?",
+            "Have you received a formal written notice from your landlord? "
+            "If so, what type of document is it (e.g. 3-day, 30-day, Pay or Quit) and what date is on it?",
             "Determine legal eviction status and document type/date for SHRA / legal aid qualification",
             "Distinguishes rental assistance from formal legal defense representation",
-            False,  # can_skip=False per contract (§3.3, eviction clarification)
+            False,
         )
     elif fact_key in ["household_gross_monthly_income", "prior_year_gross_income", "household_income"]:
         return (
             "What was your approximate household income before taxes last year?",
             "Determine household income eligibility threshold",
             "Required to assess eligibility under published income limits",
-            False,  # can_skip=False per Julia Requirement
+            False,
         )
     else:
         return (
