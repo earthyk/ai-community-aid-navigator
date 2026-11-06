@@ -288,7 +288,7 @@ cui = [c for c in r8v["action_cards"] if c["program_id"] == "MOCK-UI-01"]
 con1_contacts = c211.get("contacts", [])
 check("C-CON1 Verified contact in next_step with check date; contacts[] populated with label/value/checked_at/evidence_refs",
       [True, True, True, True],
-      ["Call 2-1-1 and press 8, Mon-Sat 7 a.m. to 7 p.m. (checked Oct 21)." in c211["next_step"],
+      ["Call 2-1-1 and press 8, Mon-Sat 7 a.m. to 7 p.m (checked Oct 21)." in c211["next_step"],
        "EV-MOCK-008" in c211["source_refs"],
        any(x["label"] == "Contact" and x["value"] == "Call 2-1-1 and press 8, Mon-Sat 7 a.m. to 7 p.m." and x["checked_at"] == "2026-10-21" for x in con1_contacts),
        any("EV-MOCK-008" in x["evidence_refs"] for x in con1_contacts)])

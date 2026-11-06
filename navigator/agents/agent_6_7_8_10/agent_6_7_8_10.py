@@ -180,6 +180,9 @@ def _build_contacts(claims, program_id, evidence_records=None):
             datetime.strptime(when, "%Y-%m-%d")
         except ValueError:
             continue  # no valid check date — never appears
+        # contact rows about lost/stolen cards or EBT account servicing are not actionable
+        if fp.startswith("contact") and re.search(r"lost or stolen|EBT Customer Service", str(val), re.I):
+            continue
         # application_method rows: exclude rules/requirements; must be actual ways to apply
         if fp.startswith("application_method"):
             if _RULE_ROW_RE.match(str(val)):
@@ -244,14 +247,18 @@ def _first_sentence(text, max_chars=120):
 def _next_step_contacts(contacts):
     """
     Return at most 2 contact snippets for next_step (v0.7+):
-    1. first online application method (URL or "online" in value)
-       When it has a URL, format as "Apply online: <clean url> (checked Mon D)."
-    2. first phone contact (phone pattern in value)
+    1. First "How to apply" item that has a URL → "Apply online: <url> (checked Mon D)."
+       If no URL item, the first "How to apply" item with a phone or 2-1-1 pattern.
+    2. First "Contact" item with a phone pattern.
     Each non-URL item uses only the first sentence (≤ 120 chars) of the value.
+    Double periods are avoided: if the sentence already ends with ".", it is stripped
+    before appending " (checked Mon D).".
     """
     _phone_re = re.compile(r"\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}|\b2-1-1\b|\b211\b", re.I)
-    _online_re = re.compile(r"https?://|online", re.I)
-    online = next((c for c in contacts if c["label"] == "How to apply" and _online_re.search(c["value"])), None)
+    # 1st snippet: URL "How to apply" first; fall back to phone/2-1-1 "How to apply"
+    online_url = next((c for c in contacts if c["label"] == "How to apply" and _URL_RE.search(c["value"])), None)
+    online_phone = next((c for c in contacts if c["label"] == "How to apply" and _phone_re.search(c["value"])), None)
+    online = online_url or online_phone
     phone = next((c for c in contacts if c["label"] == "Contact" and _phone_re.search(c["value"])), None)
     snippets = []
     for item in [online, phone]:
@@ -262,7 +269,11 @@ def _next_step_contacts(contacts):
         if url_m:
             snippets.append(f"Apply online: {_clean_url(url_m.group(0))} (checked {d:%b} {d.day}).")
         else:
-            snippets.append(f"{_first_sentence(item['value'])} (checked {d:%b} {d.day}).")
+            sentence = _first_sentence(item["value"])
+            # Strip the trailing period so "(checked Mon D)." never follows a period
+            if sentence.endswith("."):
+                sentence = sentence[:-1]
+            snippets.append(f"{sentence} (checked {d:%b} {d.day}).")
     return snippets
 
 

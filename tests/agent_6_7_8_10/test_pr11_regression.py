@@ -225,6 +225,47 @@ class TestPR11Regression(unittest.TestCase):
                     f"'(checked' after it.\nnext_step: {ns!r}",
                 )
 
+    # C-R7: Coordinated Access next_step contact part starts with "Call 2-1-1 and press 8"
+    def test_C_R7_coord_access_next_step_starts_with_211(self):
+        ns = self._card(PROG_COORD_ACCESS)["next_step"]
+        self.assertIn(
+            "Call 2-1-1 and press 8",
+            ns,
+            f"Coordinated Access next_step does not contain 'Call 2-1-1 and press 8': {ns!r}",
+        )
+        # The 2-1-1 snippet must appear before the Contact phone snippet
+        idx_211 = ns.index("Call 2-1-1 and press 8")
+        idx_tollfree = ns.find("Toll-free")
+        self.assertGreater(
+            idx_tollfree, idx_211,
+            f"'Toll-free' appears before 'Call 2-1-1 and press 8' in next_step: {ns!r}",
+        )
+
+    # C-R8: no CalFresh contacts[] item contains "lost or stolen"
+    def test_C_R8_calfresh_no_lost_or_stolen_in_contacts(self):
+        contacts = self._card(PROG_CALFRESH)["contacts"]
+        for item in contacts:
+            self.assertNotIn(
+                "lost or stolen",
+                item["value"].lower(),
+                f"CalFresh contacts[] contains 'lost or stolen' row: {item['value']!r}",
+            )
+            self.assertNotIn(
+                "ebt customer service",
+                item["value"].lower(),
+                f"CalFresh contacts[] contains 'EBT Customer Service' row: {item['value']!r}",
+            )
+
+    # C-R9: no next_step for the 4 KB programs contains ". (checked"
+    def test_C_R9_no_double_period_before_checked(self):
+        for pid, card in self.cards.items():
+            ns = card["next_step"]
+            self.assertNotIn(
+                ". (checked",
+                ns,
+                f"next_step for {pid} contains '. (checked' (double period): {ns!r}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
