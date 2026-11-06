@@ -6,13 +6,14 @@ from unittest import mock
 from navigator.supervisor import contract as C
 from navigator.supervisor import run as R
 from tests import fake_agents as F
+from tests.fake_agents import FIXTURE_KB
 
 STORY = "I was laid off. Rent is due November 1. ZIP 95823."
 
 
 def run_with(**overrides):
     agents = dict(F.ALL, **overrides)
-    return R.Run(agents, R.DEFAULT_KB).execute(STORY)
+    return R.Run(agents, FIXTURE_KB).execute(STORY)
 
 
 def codes(rep):
@@ -52,7 +53,7 @@ class TestRunner(unittest.TestCase):
 
     def test_missing_agent(self):
         agents = dict(F.ALL); del agents["agent_5"]
-        rep = R.Run(agents, R.DEFAULT_KB).execute(STORY)
+        rep = R.Run(agents, FIXTURE_KB).execute(STORY)
         self.assertEqual(rep["outcome"], "stopped_at_agent_5")
         self.assertIn("AGENT_NOT_CONNECTED", codes(rep))
 
@@ -65,7 +66,7 @@ class TestRunner(unittest.TestCase):
         seen = {}
         def spy(req):
             seen["text"] = req["payload"]["story_text"]; return F.agent_1(req)
-        rep = R.Run(dict(F.ALL, agent_1=spy), R.DEFAULT_KB).execute(STORY + " SSN 123-45-6789")
+        rep = R.Run(dict(F.ALL, agent_1=spy), FIXTURE_KB).execute(STORY + " SSN 123-45-6789")
         self.assertNotIn("123-45-6789", seen["text"])
         self.assertIn("PII_MASKED", {i["code"] for i in rep["supervisor_issues"]})
 
@@ -102,17 +103,17 @@ class TestRunner(unittest.TestCase):
         card_ids = [c["card_id"] for c in rep["plan"]["action_cards"]]
         self.assertEqual(card_ids, ["card_01"])   # only card_01 released, card_02 withheld
 
-    def test_repair_no_repaired_card_ids_field_is_full_replacement(self):
-        """Test 3: Agent 8 repair returns a full plan without repaired_card_ids.
-        Existing test test_flagged_card_withheld_after_two_repair_rounds covers this;
-        confirm the merge helper treats absence of repaired_card_ids as a full replacement."""
+    def test_repair_without_repaired_card_ids_keeps_current_plan(self):
+        """FIX 4: merge helper — no repaired_card_ids → current plan kept, REPAIR_IDS_INVALID raised."""
         current = {"plan_version": "1", "action_cards": [{"card_id": "card_01"}, {"card_id": "card_02"}],
                    "potential_options": ["opt"], "coverage_gaps": ["gap"]}
         repair_result = {"result": {"plan_version": "2", "action_cards": [{"card_id": "card_03"}],
                                     "potential_options": [], "coverage_gaps": []}}
         new_plan, issues = R.merge_repaired_plan(current, repair_result)
-        self.assertEqual(issues, [])
-        self.assertEqual([c["card_id"] for c in new_plan["action_cards"]], ["card_03"])
+        self.assertEqual([c["card_id"] for c in new_plan["action_cards"]], ["card_01", "card_02"])
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "REPAIR_IDS_INVALID")
+        self.assertEqual(issues[0]["severity"], "warning")
 
     def test_repair_agent10_receives_full_merged_plan(self):
         """Test 4: In repair rounds, the request sent to Agent 10 contains all cards of the merged plan."""
@@ -185,6 +186,60 @@ class TestRunner(unittest.TestCase):
         self.assertEqual(new_plan["potential_options"], ["opt_a"])
         self.assertEqual(new_plan["coverage_gaps"], ["gap_x"])
 
+    def test_merge_missing_plan_version_keeps_current(self):
+        """FIX 3.1: repair result with no plan_version → merged plan keeps current plan_version."""
+        current = {"plan_version": "v1", "action_cards": [{"card_id": "card_01"}],
+                   "potential_options": [], "coverage_gaps": []}
+        repair = {"result": {"action_cards": [{"card_id": "card_01"}],
+                             "repaired_card_ids": ["card_01"]}}   # no plan_version key
+        new_plan, issues = R.merge_repaired_plan(current, repair)
+        self.assertEqual(new_plan["plan_version"], "v1")
+        self.assertEqual(issues, [])
+
+    def test_merge_repaired_ids_bare_string_keeps_plan(self):
+        """FIX 3.2: repaired_card_ids is a bare string → REPAIR_IDS_INVALID, plan unchanged."""
+        current = {"plan_version": "v1", "action_cards": [{"card_id": "card_01"}, {"card_id": "card_02"}],
+                   "potential_options": [], "coverage_gaps": []}
+        repair = {"result": {"plan_version": "v2", "action_cards": [], "repaired_card_ids": "card_02"}}
+        new_plan, issues = R.merge_repaired_plan(current, repair)
+        self.assertEqual([c["card_id"] for c in new_plan["action_cards"]], ["card_01", "card_02"])
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "REPAIR_IDS_INVALID")
+        self.assertEqual(issues[0]["severity"], "warning")
+
+    def test_merge_repaired_ids_number_keeps_plan(self):
+        """FIX 3.2: repaired_card_ids is a number → REPAIR_IDS_INVALID, plan unchanged."""
+        current = {"plan_version": "v1", "action_cards": [{"card_id": "card_01"}, {"card_id": "card_02"}],
+                   "potential_options": [], "coverage_gaps": []}
+        repair = {"result": {"plan_version": "v2", "action_cards": [], "repaired_card_ids": 5}}
+        new_plan, issues = R.merge_repaired_plan(current, repair)
+        self.assertEqual([c["card_id"] for c in new_plan["action_cards"]], ["card_01", "card_02"])
+        self.assertEqual(issues[0]["code"], "REPAIR_IDS_INVALID")
+
+    def test_merge_repaired_ids_list_with_nonstring_keeps_plan(self):
+        """FIX 3.2: repaired_card_ids contains a non-string → REPAIR_IDS_INVALID, plan unchanged."""
+        current = {"plan_version": "v1", "action_cards": [{"card_id": "card_01"}, {"card_id": "card_02"}],
+                   "potential_options": [], "coverage_gaps": []}
+        repair = {"result": {"plan_version": "v2", "action_cards": [], "repaired_card_ids": ["card_02", 7]}}
+        new_plan, issues = R.merge_repaired_plan(current, repair)
+        self.assertEqual([c["card_id"] for c in new_plan["action_cards"]], ["card_01", "card_02"])
+        self.assertEqual(issues[0]["code"], "REPAIR_IDS_INVALID")
+
+    def test_repair_no_repaired_card_ids_full_cycle(self):
+        """FIX 4 full-cycle: Agent 10 flags card_02 on round 0 only; repair Agent 8 returns
+        only card_02 with no repaired_card_ids → merge keeps current plan; final plan has
+        card_01 and card_02, REPAIR_IDS_INVALID in supervisor_issues."""
+        rep = run_with(agent_8=F.agent_8_repair_card02_no_ids,
+                       agent_10=F.agent_10_flags_card02_once)
+        self.assertEqual(rep["outcome"], "completed")
+        self.assertEqual(rep["plan"]["withheld_card_ids"], [])
+        card_ids = [c["card_id"] for c in rep["plan"]["action_cards"]]
+        self.assertEqual(card_ids, ["card_01", "card_02"])
+        self.assertIn("REPAIR_IDS_INVALID",
+                      {i["code"] for i in rep["supervisor_issues"]})
+        card02 = next(c for c in rep["plan"]["action_cards"] if c["card_id"] == "card_02")
+        self.assertNotEqual(card02["action_title"], "Contact the program (no-ids repair)")
+
     # ---------------------------------------------------------------- Fix 2 tests (ref_date)
 
     def test_ref_date_passed_to_run_appears_in_agent1_payload_and_report(self):
@@ -193,18 +248,26 @@ class TestRunner(unittest.TestCase):
         seen = {}
         def spy(req):
             seen["ref_date"] = req["payload"].get("ref_date"); return F.agent_1(req)
-        rep = R.Run(dict(F.ALL, agent_1=spy), R.DEFAULT_KB, ref_date=fixed).execute(STORY)
+        rep = R.Run(dict(F.ALL, agent_1=spy), FIXTURE_KB, ref_date=fixed).execute(STORY)
         self.assertEqual(seen["ref_date"], "2026-12-01")
         self.assertEqual(rep["ref_date"], "2026-12-01")
 
     def test_no_ref_date_uses_todays_date(self):
-        """Test 9: No ref_date given → Agent 1 payload contains today's ISO date."""
-        today = datetime.date.today().isoformat()
+        """Test 9: No ref_date given → _today() is used; patching it gives a deterministic result."""
+        frozen = datetime.date(2026, 11, 15)
         seen = {}
         def spy(req):
             seen["ref_date"] = req["payload"].get("ref_date"); return F.agent_1(req)
-        R.Run(dict(F.ALL, agent_1=spy), R.DEFAULT_KB).execute(STORY)
-        self.assertEqual(seen["ref_date"], today)
+        with mock.patch("navigator.supervisor.run._today", return_value=frozen):
+            rep = R.Run(dict(F.ALL, agent_1=spy), FIXTURE_KB).execute(STORY)
+        self.assertEqual(seen["ref_date"], "2026-11-15")
+        self.assertEqual(rep["ref_date"], "2026-11-15")
+
+    def test_agent1_request_no_ref_date_raises(self):
+        """Test 11: agent1_request called with ref_date=None raises ValueError."""
+        from navigator.supervisor import builders as B
+        with self.assertRaises(ValueError):
+            B.agent1_request(B.CaseState("c", "r", "x"), "some story", ref_date=None)
 
     def test_cli_invalid_ref_date_exits_code_2(self):
         """Test 10: CLI --ref-date 2026-13-40 → exit code 2 and a one-line error."""
@@ -212,7 +275,9 @@ class TestRunner(unittest.TestCase):
         from contextlib import redirect_stdout
         buf = io.StringIO()
         with redirect_stdout(buf):
-            rc = R.main(["--agents", "tests/agents_fake.json", "--ref-date", "2026-13-40",
+            rc = R.main(["--agents", "tests/agents_fake.json",
+                         "--kb", FIXTURE_KB,
+                         "--ref-date", "2026-13-40",
                          "--no-isolate", "--out", "test_invalid_date_report.json"])
         self.assertEqual(rc, 2)
         output = buf.getvalue().strip()

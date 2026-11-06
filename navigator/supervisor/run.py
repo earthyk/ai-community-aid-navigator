@@ -33,29 +33,30 @@ MAX_REPAIR_ROUNDS = 2    # contract 5.3: 2 repair rounds after an Agent 10 FLAG
 def merge_repaired_plan(current_plan, repair_result):
     """Merge a repair-round Agent 8 result into the current plan.
 
-    If repair_result contains repaired_card_ids (a list), replace only those
-    cards in the current plan (keeping original order); leave all other cards,
-    potential_options and coverage_gaps unchanged.  Take plan_version from the
-    new result.
+    repaired_card_ids must be present and be a list of strings.  If it is
+    absent or is not a list of strings (e.g. a bare string, a number, or a
+    list containing a non-string), nothing is merged, the current plan is
+    kept unchanged, and REPAIR_IDS_INVALID (warning) is added to issues.
 
-    If repaired_card_ids is absent, treat the result as a full replacement
-    (backward compatible with agents that always return the full plan).
+    When merging: replace only the listed cards in the current plan (keeping
+    original order); leave all other cards, potential_options and coverage_gaps
+    unchanged.  If the repair result has no plan_version, keep the current
+    plan's plan_version.
 
-    Returns (new_plan, issues).  Issues use codes REPAIR_UNKNOWN_CARD and
-    REPAIR_CARD_MISSING (both severity warning).
+    Returns (new_plan, issues).  Issues use codes REPAIR_UNKNOWN_CARD,
+    REPAIR_CARD_MISSING, and REPAIR_IDS_INVALID (all severity warning).
     """
-    from navigator.supervisor import checks  # avoid circular at module level
     res = repair_result.get("result", {})
     repaired_ids = res.get("repaired_card_ids")
 
-    # No repaired_card_ids → full replacement (backward compat)
-    if repaired_ids is None:
-        return {
-            "plan_version": res.get("plan_version"),
-            "action_cards": res.get("action_cards", []),
-            "potential_options": res.get("potential_options", []),
-            "coverage_gaps": res.get("coverage_gaps", []),
-        }, []
+    # repaired_card_ids absent or not a list of strings → keep current plan unchanged
+    if repaired_ids is None or not (
+            isinstance(repaired_ids, list) and all(isinstance(i, str) for i in repaired_ids)):
+        msg = ("Repair result has no repaired_card_ids; current plan kept"
+               if repaired_ids is None else
+               f"repaired_card_ids is not a list of strings "
+               f"({type(repaired_ids).__name__}); current plan kept")
+        return current_plan, [checks.issue("REPAIR_IDS_INVALID", "warning", msg)]
 
     issues = []
     returned_by_id = {c["card_id"]: c for c in res.get("action_cards", [])}
@@ -87,7 +88,8 @@ def merge_repaired_plan(current_plan, repair_result):
             new_cards.append(card)                      # untouched
 
     new_plan = {
-        "plan_version": res.get("plan_version"),
+        "plan_version": res.get("plan_version") if res.get("plan_version") is not None
+                        else current_plan.get("plan_version"),
         "action_cards": new_cards,
         "potential_options": current_plan.get("potential_options", []),
         "coverage_gaps": current_plan.get("coverage_gaps", []),
@@ -227,6 +229,11 @@ def _call_in_thread(fn, request, timeout):
         pool.shutdown(wait=False, cancel_futures=True)
 
 
+def _today():
+    """Return today's date.  Replaced by tests via unittest.mock.patch."""
+    return datetime.date.today()
+
+
 # ---------------------------------------------------------------- one checked call
 class Run:
     def __init__(self, agents, kb_path, ids=None, isolate=False, ref_date=None):
@@ -247,7 +254,7 @@ class Run:
         self.agent7_findings = []
         self._loaded = {}
         # Use the supplied date or today; fixed for the whole run (Fix 2)
-        self.ref_date = ref_date if ref_date is not None else datetime.date.today()
+        self.ref_date = ref_date if ref_date is not None else _today()
 
     def known_refs(self):
         known = {"program_id": set(self.programs), "evidence_id": set(self.evidence)}

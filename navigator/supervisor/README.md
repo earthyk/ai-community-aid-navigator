@@ -5,9 +5,9 @@ Owner: Slav (Supervisor / Orchestrator and integration). Contract: `docs/contrac
 ## What it does
 
 - **Runs one cycle:** Agent 1 → 2 → 3 → 4 → 5 → 6 → 8 → 10, with Agent 7 reviewing the retrieval, matching, verification and planning stages. Agents never call each other; every call is one AgentRequest and one AgentResult (contracts sections 1–2).
-- **Builds every request** with only the facts that agent needs: S0 input masking before Agent 1; `ref_date` (ISO string) added to the Agent 1 payload so it can resolve relative dates in the story against a fixed reference date (PROPOSED for contracts v1.2); user confirmation turns Agent 1 claims into case facts and bumps `case_version`; county + ZIP for Agent 3; `program_criteria` for Agent 4; `programs_to_check` for Agent 5 (no confirmed mismatches); the planning package for Agents 6, 8 and 10 (availability and its evidence from the KB; program name, organization and subcategory added to each match; user dates from case facts; official deadlines only from the KB).
+- **Builds every request** with only the facts that agent needs: S0 input masking before Agent 1; `ref_date` (ISO string) added to the Agent 1 payload so it can resolve relative dates in the story against a fixed reference date (PROPOSED for contracts v1.2); `agent1_request` raises `ValueError` if `ref_date` is `None` — the runner always supplies it, using `_today()` in `run.py` when no date is given (patchable in tests); user confirmation turns Agent 1 claims into case facts and bumps `case_version`; county + ZIP for Agent 3; `program_criteria` for Agent 4; `programs_to_check` for Agent 5 (no confirmed mismatches); the planning package for Agents 6, 8 and 10 (availability and its evidence from the KB; program name, organization and subcategory added to each match; user dates from case facts; official deadlines only from the KB).
 - **Checks every result** (S1–S9): schema, identity echo, stale version, enums, references, failed status, 30 s timeout, mock flag, privacy (SSN, bank and card numbers by value pattern and field name). A result that fails a check is rejected and reported, never treated as success.
-- **Retries and repair** (contracts 5.3): 1 retry per call (none for stale or privacy results); after an Agent 10 FLAG, up to 2 repair rounds; then only cards still flagged with `blocks_release` are withheld and the rest of the plan is released. In each repair round the Supervisor sends only the blocking flags to Agent 8; if Agent 8 returns `repaired_card_ids`, the Supervisor merges only those cards back into the current plan, preserving all other cards, potential options, and coverage gaps in their original order. Agent 10 always receives the full merged plan. If the repair result contains an unknown `card_id` it is not added (`REPAIR_UNKNOWN_CARD` warning); if a listed card is missing it is kept unchanged (`REPAIR_CARD_MISSING` warning). The merge logic is in `merge_repaired_plan()` in `run.py` and is covered by unit tests. Both the merge rule and `ref_date` are PROPOSED for contracts v1.2.
+- **Retries and repair** (contracts 5.3): 1 retry per call (none for stale or privacy results); after an Agent 10 FLAG, up to 2 repair rounds; then only cards still flagged with `blocks_release` are withheld and the rest of the plan is released. In each repair round the Supervisor sends only the blocking flags to Agent 8; Agent 8 must return `repaired_card_ids` (a list of strings). The Supervisor then merges only those cards back into the current plan, preserving all other cards, potential options, and coverage gaps in their original order. If `repaired_card_ids` is absent or is not a list of strings, nothing is merged, the current plan is kept, and `REPAIR_IDS_INVALID` (warning) is added to `supervisor_issues`. If the repair result has no `plan_version`, the current plan's `plan_version` is kept. Agent 10 always receives the full merged plan. If the repair result contains an unknown `card_id` it is not added (`REPAIR_UNKNOWN_CARD` warning); if a listed card is missing it is kept unchanged (`REPAIR_CARD_MISSING` warning). The merge logic is in `merge_repaired_plan()` in `run.py` and is covered by unit tests. Both the merge rule and `ref_date` are PROPOSED for contracts v1.2.
 - **Isolation:** each agent call runs in its own process (`spawn`, same on Windows and Linux). On a timeout the process is stopped, so a hung agent cannot keep running. `--no-isolate` runs agents in-process (faster, no hard stop).
 - **Writes `run_report.json`:** every step, its issues, Agent 7 findings, the final plan, a "partially mocked" flag, and the `ref_date` used for the run.
 
@@ -19,18 +19,19 @@ Owner: Slav (Supervisor / Orchestrator and integration). Contract: `docs/contrac
 | `checks.py` | S0 input masking and checks S1–S9 |
 | `builders.py` | CaseState (the Supervisor's memory of one case) and the request for every agent |
 | `run.py` | the runner, `merge_repaired_plan()` helper, and `agents.json` loader (clear one-line errors, exit code 2) |
-| `../../tests/` | 66 tests: checks, builders, full cycle on fake agents, broken and hung agents, privacy, repair rounds, ref_date |
+| `../../tests/` | 72 Supervisor tests (the full suite, including Agents 3–5 tests, runs 92): checks, builders, full cycle on fake agents, broken and hung agents, privacy, repair rounds, ref_date |
+| `../../tests/fixtures/kb_supervisor_fixture.json` | Frozen KB copy for Supervisor tests (Nov 6, 2026). Tests use this, not the live KB. |
 
 ## How to run (from the repository root)
 
 ```
-python -m unittest discover tests                                          # Supervisor tests
-python -m navigator.supervisor.run --agents tests/agents_fake.json         # full cycle on fake agents
-python -m navigator.supervisor.run --agents tests/agents_fake.json --demo-broken   # the Supervisor rejects sample 03
+python -I -m unittest discover -s tests -t .                               # all tests (72 Supervisor + 20 Agents 3–5)
+python -m navigator.supervisor.run --agents tests/agents_fake.json --kb tests/fixtures/kb_supervisor_fixture.json               # full cycle on fake agents
+python -m navigator.supervisor.run --agents tests/agents_fake.json --kb tests/fixtures/kb_supervisor_fixture.json --demo-broken   # the Supervisor rejects sample 03
 python -m navigator.supervisor.run --agents agents.json                    # the team's components
 ```
 
-The tests and the KB-based steps read `navigator/kb/kb_sacramento.json` (Silver's KB).
+Supervisor tests use the frozen fixture `tests/fixtures/kb_supervisor_fixture.json` (a copy of the KB as of Nov 6, 2026) so they do not depend on live KB data. The live KB `navigator/kb/kb_sacramento.json` is only used by the real end-to-end run.
 
 ## Other options
 

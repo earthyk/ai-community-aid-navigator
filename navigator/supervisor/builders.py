@@ -84,11 +84,14 @@ def agent1_request(state, story_text, locale="en-US", ref_date=None):
     """S0 runs here: the story is masked before Agent 1 sees it.
 
     ref_date: a datetime.date or ISO string to pass to Agent 1 so it can
-    resolve relative dates in the story.  Defaults to today if not supplied.
+    resolve relative dates in the story.  The runner always supplies this
+    (Run.__init__ calls _today() when none is given).
+    Raises ValueError if ref_date is None so the omission is caught early.
     """
     masked, issues = mask_user_text(story_text)
     if ref_date is None:
-        ref_date = datetime.date.today()
+        raise ValueError("agent1_request: ref_date must not be None; "
+                         "pass a datetime.date or ISO string")
     if isinstance(ref_date, datetime.date):
         ref_date = ref_date.isoformat()
     req = make_request(state, "agent_1", "understand_story",

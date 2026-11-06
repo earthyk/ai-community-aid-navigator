@@ -11,6 +11,7 @@ from unittest import mock
 from navigator.supervisor import contract as C
 from navigator.supervisor import run as R
 from tests import fake_agents as F
+from tests.fake_agents import FIXTURE_KB
 
 STORY = "I was laid off. Rent is due November 1. ZIP 95823."
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -18,7 +19,7 @@ ROOT = os.path.dirname(HERE)
 
 
 def run_with(**overrides):
-    return R.Run(dict(F.ALL, **overrides), R.DEFAULT_KB).execute(STORY)
+    return R.Run(dict(F.ALL, **overrides), FIXTURE_KB).execute(STORY)
 
 
 def codes(items):
@@ -27,13 +28,13 @@ def codes(items):
 
 class TestAgent2Updates(unittest.TestCase):
     def test_need_updates_applied(self):
-        r = R.Run(dict(F.ALL, agent_2=F.agent_2), R.DEFAULT_KB)
+        r = R.Run(dict(F.ALL, agent_2=F.agent_2), FIXTURE_KB)
         r.execute(STORY)
         urg = {n["need_id"]: n["urgency"] for n in r.state.needs}
         self.assertEqual(urg["need_002"], "immediate")
 
     def test_unknown_need_rejects_agent2_but_run_continues(self):
-        r = R.Run(dict(F.ALL, agent_2=F.agent_2_unknown_need), R.DEFAULT_KB)
+        r = R.Run(dict(F.ALL, agent_2=F.agent_2_unknown_need), FIXTURE_KB)
         rep = r.execute(STORY)
         self.assertEqual(rep["outcome"], "completed")                      # Agent 2 is a soft step
         a2 = [s for s in rep["steps"] if s["role_id"] == "agent_2"]
@@ -111,7 +112,7 @@ class TestConfigErrors(unittest.TestCase):
     def test_main_prints_one_line_and_returns_2(self):
         path = self.write('{"paths": [".."], "agents": {"agent_3": "tests.fake_agents:agent_33"}}')
         with mock.patch("builtins.print") as p:
-            self.assertEqual(R.main(["--agents", path, "--out", os.devnull]), 2)
+            self.assertEqual(R.main(["--agents", path, "--kb", FIXTURE_KB, "--out", os.devnull]), 2)
         self.assertTrue(p.call_args[0][0].startswith("Cannot load agents:"))
 
 
@@ -122,7 +123,7 @@ def ref(name):
 class TestProcessIsolation(unittest.TestCase):
     def test_full_cycle_in_processes(self):
         agents = {role: ref(fn.__name__) for role, fn in F.ALL.items()}
-        rep = R.Run(agents, R.DEFAULT_KB, isolate=True).execute(STORY)
+        rep = R.Run(agents, FIXTURE_KB, isolate=True).execute(STORY)
         self.assertEqual(rep["outcome"], "completed")
 
     def test_timeout_really_stops_the_agent(self):
@@ -130,7 +131,7 @@ class TestProcessIsolation(unittest.TestCase):
         agents["agent_3"] = ref("very_slow_agent")          # sleeps 30 s
         t0 = time.monotonic()
         with mock.patch.object(C, "TIMEOUT_SECONDS", 1):
-            rep = R.Run(agents, R.DEFAULT_KB, isolate=True).execute(STORY)
+            rep = R.Run(agents, FIXTURE_KB, isolate=True).execute(STORY)
         self.assertLess(time.monotonic() - t0, 20)          # 2 tries x 1 s + process start, not 2 x 30 s
         self.assertEqual(rep["outcome"], "stopped_at_agent_3")
         self.assertIn("TIMEOUT", {i["code"] for s in rep["steps"] for i in s["issues"]})
@@ -139,7 +140,7 @@ class TestProcessIsolation(unittest.TestCase):
     def test_crash_in_process_is_reported(self):
         agents = {role: ref(fn.__name__) for role, fn in F.ALL.items()}
         agents["agent_4"] = ref("crashing_agent")
-        rep = R.Run(agents, R.DEFAULT_KB, isolate=True).execute(STORY)
+        rep = R.Run(agents, FIXTURE_KB, isolate=True).execute(STORY)
         self.assertEqual(rep["outcome"], "stopped_at_agent_4")
         msgs = [i["message"] for s in rep["steps"] for i in s["issues"] if i["code"] == "AGENT_EXCEPTION"]
         self.assertTrue(msgs and "ValueError" in msgs[0])
