@@ -93,7 +93,13 @@ def _deadline_claims(program_id, claims):
 
 
 def _deadline_info(program_id, claims):
-    """Official deadline only from Agent 5 evidence. Conflicts are never resolved silently."""
+    """Official deadline only from Agent 5 evidence. Conflicts are never resolved silently.
+
+    Treats as conflicting:
+    - any claim with verification_status == "conflicting"
+    - two or more verified claims with different non-None values
+    - a verified claim whose claim_value is None (unknown deadline, cannot be shown)
+    """
     dl = _deadline_claims(program_id, claims)
     conflicting = [c for c in dl if c["verification_status"] == "conflicting"]
     if conflicting:
@@ -101,9 +107,16 @@ def _deadline_info(program_id, claims):
         for c in conflicting:
             dates += re.findall(r"\d{4}-\d{2}-\d{2}", str(c["claim_value"]))
         return {"status": "conflicting", "dates": sorted(set(dates))}
-    verified = [c for c in dl if c["verification_status"] == "verified" and c["claim_value"]]
-    if verified:
-        return {"status": "verified", "value": verified[0]["claim_value"]}
+    verified = [c for c in dl if c["verification_status"] == "verified"]
+    # A verified claim with claim_value=None means the deadline is unknown; treat as conflict.
+    if any(c["claim_value"] is None for c in verified):
+        return {"status": "conflicting", "dates": []}
+    # Two or more verified claims with different values: pick neither (A6-02).
+    values = list(dict.fromkeys(c["claim_value"] for c in verified if c["claim_value"]))
+    if len(values) >= 2:
+        return {"status": "conflicting", "dates": sorted(values)}
+    if values:
+        return {"status": "verified", "value": values[0]}
     return None
 
 
@@ -290,7 +303,7 @@ TEMPLATES = {
     "food_pantry":           ("Visit a local food pantry", "offers free food in your area", "Check the posted hours and visit during an open time.", "Food is running low, and a pantry is usually the fastest way to get food."),
     "calfresh_benefits":     ("Check food benefits", "provides ongoing help buying food", "Contact the provider or apply through the official site. They decide eligibility based on your household.", "Food is running low this week, and benefits take time, so starting now helps."),
     "unemployment_insurance":("Apply for unemployment benefits", "can replace part of lost wages after a layoff", "Start the online application. Have your last employer's details and last day worked ready.", "Income replacement supports your other needs, and payments take time to start, so file early."),
-    "rental_assistance":     ("Ask about rent help", "offers help with rent in Sacramento", "Contact the provider to confirm requirements and whether assistance is currently available.", "Your rent date is close, so contacting this program early gives the most time."),
+    "rental_assistance":     ("Ask about rent help", "offers help with rent in Sacramento", "Contact the provider to confirm requirements and whether assistance is currently available.", "Contacting this program early gives the most time to arrange help."),
     "eviction_prevention":   ("Ask about help to stay in your home", "helps tenants at risk of losing their housing", "Contact the provider to ask what help is available and what documents to bring, such as any notice from your landlord.", "Acting before a housing deadline gives you the most options."),
     "emergency_shelter":     ("Ask about emergency housing", "connects people to emergency shelter and housing help", "Contact the provider to ask about current openings and how to get connected.", "A safe place to stay comes first if your housing is at risk."),
     "motel_voucher":         ("Ask about a short-term motel stay", "may offer short-term motel stays in some situations", "Contact the provider to ask whether motel help is available and who can get it.", "Short-term housing can bridge the gap while other help starts."),
@@ -333,6 +346,29 @@ def _uncertainty(match, p):
 
 # ================================================================ Agent 6: prioritization
 
+# Housing categories that must sort before food/income actions when urgency is equal (C-OD2).
+_HOUSING_SUBS = {"rental_assistance", "eviction_prevention", "emergency_shelter", "motel_voucher", "housing_legal_aid"}
+
+_FAR_DATE = "9999-99-99"  # sentinel for missing dates in sort keys
+
+
+def _sort_key_6(action):
+    """Sort key for Agent 6 actions (A6-03).
+
+    Primary: order_group (first < parallel < later).
+    Within group: housing sub before non-housing (C-OD2).
+    Then: earliest official_deadline, user_target_date, processing_time presence.
+    """
+    g = GROUP_ORDER[action["order_group"]]
+    dl = action.get("official_deadline") or _FAR_DATE
+    ud = action.get("user_target_date") or _FAR_DATE
+    # housing subcategories sort before others within the same group
+    sub = action.get("_subcategory", "")
+    is_non_housing = 0 if sub in _HOUSING_SUBS else 1
+    has_pt = 0 if action.get("estimated_processing_time") else 1
+    return (g, is_non_housing, dl, ud, has_pt)
+
+
 def agent_6(request):
     """Order actions by urgency, deadlines, dependencies and parallel work. No numeric formula (P6 rules)."""
     p = request["payload"]
@@ -342,7 +378,8 @@ def agent_6(request):
     actions = []
 
     def add(**kw):
-        a = {"action_id": f"act_{len(actions) + 1:02d}", "need_id": None, "program_id": None, "suggested_priority": None,
+        a = {"action_id": f"act_{len(actions) + 1:02d}", "need_id": None, "need_ids": [],
+             "program_id": None, "suggested_priority": None,
              "order_group": "parallel", "rationale": "", "dependency_ids": [], "official_deadline": None,
              "user_target_date": None, "estimated_processing_time": None, "evidence_refs": [],
              "uncertainty_notes": [], "user_override_allowed": True}
@@ -354,7 +391,10 @@ def agent_6(request):
     for m in p["matches"]:
         if m["match_status"] == "confirmed_mismatch":
             continue  # never recommended
-        need = needs[m["need_ids"][0]]
+        # A6-01: the action covers ALL needs this match serves, not just the first.
+        primary_need_id = m["need_ids"][0]
+        all_need_ids = list(m["need_ids"])
+        need = needs[primary_need_id]
         sub = _subcat(m, needs)
         why = TEMPLATES.get(sub, DEFAULT)[3]
         group = {"immediate": "first", "high": "parallel", "unknown": "parallel"}.get(need["urgency"], "later")
@@ -362,18 +402,28 @@ def agent_6(request):
         user_date = timing.get("user_target_date")
         if not user_date and need["category"] == "housing_assistance" and "rent_due_date" in facts:
             user_date = facts["rent_due_date"]["value"]  # the user's own date, never an official deadline
+        # A6-04: only append date wording when a real date exists.
         if user_date:
             why += f" You told us your date is {_fmt_date(user_date)} (your date, not a program deadline)."
         dl = _deadline_info(m["program_id"], claims)
         dependency = []
         if dl and dl["status"] == "conflicting":
-            dates = " and ".join(_fmt_date(d) for d in dl["dates"])
+            # A6-02: build a readable date list; handle empty dates (when claim_value was None).
+            if dl["dates"]:
+                dates_str = " and ".join(_fmt_date(d) for d in dl["dates"])
+                conflict_note = f"Official sources give different deadlines: {dates_str}. Confirm with the provider which one applies."
+                rationale_text = f"Official sources disagree on the application deadline ({dates_str}). Confirm which one applies before applying."
+            else:
+                conflict_note = "The published deadline is unknown. Confirm the deadline with the provider before applying."
+                rationale_text = "The published deadline is unknown. Confirm the deadline with the provider before applying."
             closed = _availability(p).get(m["program_id"]) == "temporarily_closed"
-            confirm = add(need_id=need["need_id"], program_id=m["program_id"], order_group="later" if closed else "first",
-                          rationale=f"Official sources disagree on the application deadline ({dates}). Confirm which one applies before applying.",
+            confirm = add(need_id=primary_need_id, need_ids=all_need_ids, program_id=m["program_id"],
+                          order_group="later" if closed else "first",
+                          rationale=rationale_text,
                           evidence_refs=[r for c in _deadline_claims(m["program_id"], claims) for r in c["evidence_refs"]],
-                          uncertainty_notes=[f"Official sources give different deadlines: {dates}. Confirm with the provider which one applies."]
-                          + (["This program is temporarily closed right now. Confirm the deadline when it reopens."] if closed else []))
+                          uncertainty_notes=[conflict_note]
+                          + (["This program is temporarily closed right now. Confirm the deadline when it reopens."] if closed else []),
+                          _subcategory=sub)
             dependency = [confirm["action_id"]]
         notes = _uncertainty(m, p)
         refs = list(m["evidence_refs"])
@@ -388,29 +438,57 @@ def agent_6(request):
             else:
                 why = "Temporarily closed. No reopening date is published. Use an open option first."
                 notes.append("This program is temporarily closed. No reopening date was found; check with the provider later.")
-        a = add(need_id=need["need_id"], program_id=m["program_id"], order_group=group, rationale=why,
+        # A6-03: if processing_time is longer than time left before target_date, say so.
+        proc_time = timing.get("estimated_processing_time")
+        if proc_time and user_date:
+            try:
+                days_left = (datetime.strptime(user_date, "%Y-%m-%d") - datetime.now()).days
+                # proc_time is a string like "3-6 weeks"; extract a lower-bound number of days for comparison.
+                pt_num = re.search(r"(\d+)", str(proc_time))
+                if pt_num:
+                    pt_days = int(pt_num.group(1)) * 7  # assume weeks as unit; conservative estimate
+                    if pt_days > days_left:
+                        notes.append(
+                            f"The estimated processing time ({proc_time}) may be longer than the time before your "
+                            f"target date ({_fmt_date(user_date)}). Starting as early as possible is important, "
+                            f"but the provider decides timing and this estimate is not a guarantee."
+                        )
+            except (ValueError, TypeError):
+                pass
+        # A6-03: include deadline in rationale when it drives ordering.
+        if dl and dl["status"] == "verified":
+            why += f" The official deadline is {_fmt_date(dl['value'])}."
+        elif user_date and not dl:
+            # Only mention the date as a reason when it actually exists (A6-04).
+            why += f" Acting before your date of {_fmt_date(user_date)} gives the most time."
+        a = add(need_id=primary_need_id, need_ids=all_need_ids, program_id=m["program_id"],
+                order_group=group, rationale=why,
                 dependency_ids=dependency,
                 official_deadline=dl["value"] if dl and dl["status"] == "verified" else None,
-                user_target_date=user_date, estimated_processing_time=timing.get("estimated_processing_time"),
-                evidence_refs=refs, uncertainty_notes=notes)
+                user_target_date=user_date, estimated_processing_time=proc_time,
+                evidence_refs=refs, uncertainty_notes=notes, _subcategory=sub)
         if sub in ("calfresh_benefits", "unemployment_insurance"):
             app_ids.append(a["action_id"])
     if app_ids:
-        add(order_group="later", rationale="This depends on the applications above being submitted first.", dependency_ids=app_ids)
+        add(order_group="later", rationale="This depends on the applications above being submitted first.", dependency_ids=app_ids,
+            _subcategory="")
     # an open program for the same need as a closed one goes first
     avail = _availability(p)
-    closed_needs = {a["need_id"] for a in actions if a["program_id"] and avail.get(a["program_id"]) == "temporarily_closed"}
+    closed_needs = {nid for a in actions for nid in a["need_ids"] if a["program_id"] and avail.get(a["program_id"]) == "temporarily_closed"}
     for a in actions:
-        if a["need_id"] in closed_needs and a["program_id"] and avail.get(a["program_id"]) != "temporarily_closed" and not a["dependency_ids"]:
+        open_for_closed = any(nid in closed_needs for nid in a["need_ids"])
+        if open_for_closed and a["program_id"] and avail.get(a["program_id"]) != "temporarily_closed" and not a["dependency_ids"]:
             a["order_group"] = "first"
             a["rationale"] += " This is the open option for this need while another program is closed."
-    actions.sort(key=lambda a: GROUP_ORDER[a["order_group"]])
+    # A6-03 + C-OD2: sort by group, then housing-first within group, then deadlines.
+    actions.sort(key=_sort_key_6)
     group_counters = {}
     for a in actions:
         g = a["order_group"]
         group_counters[g] = group_counters.get(g, 0) + 1
         a["suggested_priority"] = group_counters[g]
-    covered = {a["need_id"] for a in actions}
+    # A6-01: covered needs = all need_ids across all actions (not just the primary need_id).
+    covered = {nid for a in actions for nid in a["need_ids"]}
     issues = [_issue("COVERAGE_GAP", "warning", f"No action found for {n}", n) for n in needs if n not in covered]
     return _envelope(request, "completed", {"proposed_actions": actions}, issues)
 
@@ -554,6 +632,8 @@ def agent_7(request):
     known = {m["program_id"] for m in matches}
     need_of = {m["program_id"]: m["need_ids"][0] for m in matches}
     claims = sr.get("checked_claims", [])
+    # A7-02: track whether evidence_records was provided (even if empty).
+    ev_records_provided = "evidence_records" in p
     ev_ids = {e["evidence_id"] for e in p.get("evidence_records", [])}
     conflict_groups = {}
     for c in claims:
@@ -561,13 +641,20 @@ def agent_7(request):
         crit = fp.startswith(CRITICAL_FIELDS)
         if known and pid not in known:
             add("Q6", "critical", pid, "Claim references a program that is not in the matches", "recheck_source", fp)
-        if c["verification_status"] == "verified" and (not c.get("evidence_refs") or (ev_ids and not set(c["evidence_refs"]) <= ev_ids)):
+        # A7-02: an empty evidence_records list is never a pass — any evidence_ref must be in the list.
+        if c["verification_status"] == "verified" and (
+            not c.get("evidence_refs")
+            or (ev_records_provided and not set(c["evidence_refs"]) <= ev_ids)
+        ):
             add("Q1", "critical" if crit else "warning", pid, "Verified claim has no resolvable evidence", "omit_unsupported_claim", fp)
         if c["verification_status"] == "conflicting":
             conflict_groups.setdefault((pid, fp), []).append(c)
     for (pid, fp), group in conflict_groups.items():
         values = {str(c.get("claim_value")) for c in group if c.get("claim_value") is not None}
-        if len(values) < 2 and not any(re.search(r"\bvs\b|\d{4}-\d{2}-\d{2}.*\d{4}-\d{2}-\d{2}", str(c.get("claim_value"))) for c in group):
+        # A7-03: claim_value=None in a conflict group means the value is genuinely unknown/missing;
+        # treat the group as a real conflict (Q2), never as "only one value" (Q3).
+        has_none_value = any(c.get("claim_value") is None for c in group)
+        if not has_none_value and len(values) < 2 and not any(re.search(r"\bvs\b|\d{4}-\d{2}-\d{2}.*\d{4}-\d{2}-\d{2}", str(c.get("claim_value"))) for c in group):
             add("Q3", "warning", pid, f"{fp} is labeled conflicting but only one published value exists (missing information is unknown, not conflicting)",
                 "recheck_source", fp, [r for c in group for r in c["evidence_refs"]], need_of.get(pid))
             continue
@@ -619,8 +706,12 @@ def agent_7(request):
         elif age > window:
             add("Q7", "warning", pid, f"Evidence is {age} day(s) old, older than the {window}-day window", "recheck_source", fp)
     covered = {n for m in matches for n in m["need_ids"]}
+    # A7-01: fire Q8 whenever the stage_result has a "matches" key (even when it is empty),
+    # because the stage was expected to produce matches.  Do NOT fire when the key is absent
+    # (e.g. an external-discovery-only stage that has no matches at all).
+    has_matches_key = "matches" in sr
     for n in p.get("needs", []):
-        if matches and n["need_id"] not in covered:
+        if has_matches_key and n["need_id"] not in covered:
             add("Q8", "warning", None, f"Need {n['need_id']} has no candidate or coverage gap", "report_coverage_gap", need=n["need_id"])
     real = [f for f in findings if f["severity"] != "info"]  # info findings (evidence age) do not change the assessment
     result = {"stage": p["stage"], "stage_assessment": "issues_found" if real else "clear", "findings": findings}
@@ -725,6 +816,16 @@ def agent_10(request):
     for opt in plan.get("potential_options", []):
         if not opt.get("official_link") or not opt.get("what_needs_checking"):
             flag(None, "V11", f"Potential option {opt.get('program_id')} lacks an official link or what needs checking", "Add both.")
+    # A10-02: each card's related_need_ids must only contain needs that the original match actually covers.
+    for c in cards:
+        pid = c.get("program_id")
+        if pid and pid in matches:
+            valid_need_ids = set(matches[pid]["need_ids"])
+            for rn in c.get("related_need_ids", []):
+                if rn not in valid_need_ids:
+                    flag(c["card_id"], "V12",
+                         f"Card related_need_ids contains {rn} which is not in the match's need_ids for {pid}",
+                         "Set related_need_ids only to the needs the program actually matched.")
     covered = {n for c in cards for n in c.get("related_need_ids", [])} | {g["need_id"] for g in plan.get("coverage_gaps", [])}
     for n in p["needs"]:
         if n["need_id"] not in covered:
