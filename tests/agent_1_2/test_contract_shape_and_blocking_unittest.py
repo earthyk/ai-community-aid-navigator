@@ -384,7 +384,7 @@ class TestContractShapeAndBlocking(unittest.TestCase):
         self.assertEqual(res["status"], "needs_clarification")
         self.assertGreater(len(res["clarification_requests"]), 0)
         cr = res["clarification_requests"][0]
-        self.assertEqual(cr["fact_key"], "eviction_notice_details")
+        self.assertEqual(cr["fact_key"], "eviction_notice_type")
         self.assertFalse(cr["can_skip"])
         q_text = cr["user_facing_question"].lower()
         self.assertIn("type", q_text)

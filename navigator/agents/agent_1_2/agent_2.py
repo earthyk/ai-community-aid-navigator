@@ -1,18 +1,17 @@
 """
 AI Community Aid Navigator — Agent 2: Case Analysis & Clarification
 Contracts: docs/contracts/SHARED_CONTRACTS.md (v1.1)
-Pure standard library implementation (Python 3.10+). Zero external dependencies.
+Pure standard library implementation (Python 3.11+). Zero external dependencies.
 Rules: 4-Gate Question Filter, Pacing Ceiling (<= 1 cluster/turn), Preservation of Unknowns
 
 Contract invariants enforced:
-- Julia Requirement: if household_gross_monthly_income is not known and not asked,
-  Agent 2 MUST generate a question for it with can_skip=False, regardless of whether
-  candidate_requirements has items.
-- Eviction Notice Details: When has_written_eviction_notice is True, Agent 2 asks
-  document type and date with can_skip=False.
+- Income Question: if household_gross_monthly_income is not known, not asked, AND no
+  candidate_requirements are provided, Agent 2 MUST generate a question for it with can_skip=False.
+- Eviction Notice Details: When has_written_eviction_notice is True in case_facts, Agent 2 asks
+  document type and date with can_skip=False (fact_key: eviction_notice_type).
 - Gate 3 (verified_rule_ref): questions without a valid rule ref are suppressed.
 - Gate 2: already-asked facts are never re-asked.
-- Gate 1: known facts are never asked.
+- Gate 1: known facts are never asked (except eviction follow-up).
 - Pacing ceiling: max 1-2 clarification requests per turn.
 """
 from datetime import datetime, timezone
@@ -80,52 +79,49 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     clarification_requests: List[Dict[str, Any]] = []
     seen_keys: Set[str] = set()
 
-    # 3. Julia Requirement — Missing Income Question Generation
+    # 3. Income Question — only when no candidate_requirements are provided and not already asked
     has_income_fact = "household_gross_monthly_income" in known_keys
     income_already_asked = "household_gross_monthly_income" in already_asked_keys
 
-    has_unverified_req_test = any(
-        isinstance(r, dict) and r.get("verified_rule_ref") is None
-        for r in candidate_requirements
-    )
-
-    if not has_income_fact and not income_already_asked and not has_unverified_req_test:
+    if not has_income_fact and not income_already_asked and not candidate_requirements:
         clarification_requests.append({
             "fact_key": "household_gross_monthly_income",
             "question_intent": "Determine current monthly household income",
             "user_facing_question": "What is your approximate gross monthly household income?",
             "reason": "Required to determine eligibility thresholds across community assistance programs",
             "applicable_program_ids": [],
-            "verified_rule_ref": "rule_income_verification_baseline",
+            "verified_rule_ref": None,
             "necessity_level": "required_for_decision",
             "can_skip": False,
         })
         seen_keys.add("household_gross_monthly_income")
 
     # 4. Eviction Notice Follow-up: Document Type & Date
+    #    Only when has_written_eviction_notice is True in case_facts (Gate 1 pass),
+    #    and the follow-up has not already been asked.
     notice_is_reported = known_facts.get("has_written_eviction_notice") is True
-    eviction_doc_already_asked = (
-        "eviction_notice_details" in already_asked_keys
-        or "eviction_notice_type" in already_asked_keys
+    eviction_type_already_asked = (
+        "eviction_notice_type" in already_asked_keys
+        or "eviction_notice_details" in already_asked_keys
     )
-    has_eviction_doc_fact = "eviction_notice_type" in known_keys
+    has_eviction_type_fact = "eviction_notice_type" in known_keys
 
-    if notice_is_reported and not has_eviction_doc_fact and not eviction_doc_already_asked and not has_unverified_req_test:
+    if notice_is_reported and not has_eviction_type_fact and not eviction_type_already_asked:
         if len(clarification_requests) < 2:
             clarification_requests.append({
-                "fact_key": "eviction_notice_details",
+                "fact_key": "eviction_notice_type",
                 "question_intent": "Determine legal eviction notice type and receipt date for emergency rental defense",
                 "user_facing_question": (
-                    "What type of eviction notice did you receive (e.g., 3-day, 30-day, Pay or Quit), "
-                    "and what date is on the notice?"
+                    "What type of eviction notice did you receive (such as a 3-day notice), "
+                    "and what date is listed on it?"
                 ),
                 "reason": "Notice type and receipt date determine legal response timelines and court defense eligibility",
-                "applicable_program_ids": ["prog_legal_aid_eviction"],
-                "verified_rule_ref": "rule_eviction_timeline_01",
+                "applicable_program_ids": [],
+                "verified_rule_ref": None,
                 "necessity_level": "required_for_decision",
                 "can_skip": False,
             })
-            seen_keys.add("eviction_notice_details")
+            seen_keys.add("eviction_notice_type")
 
     # 5. 4-Gate Filter on candidate_requirements (Rule 19.2)
     for req in candidate_requirements:
@@ -137,8 +133,12 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             continue
         fact_key = str(fact_key).strip()
 
-        verified_rule_ref = req.get("verified_rule_ref")
+        # Gate 2: skip already-asked keys immediately
+        if fact_key in already_asked_keys:
+            continue
 
+        # Gate 3: suppress questions without a verified rule ref
+        verified_rule_ref = req.get("verified_rule_ref")
         if (
             verified_rule_ref is None
             or str(verified_rule_ref).strip() == ""
@@ -146,10 +146,20 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
         ):
             continue
 
+        # Gate 1: skip known facts (except eviction notice — handled separately above)
         if fact_key in known_keys and fact_key != "has_written_eviction_notice":
             continue
 
-        if fact_key in already_asked_keys or fact_key in seen_keys:
+        # Gate 4: deduplication within this turn
+        if fact_key in seen_keys:
+            continue
+
+        # Special case: if has_written_eviction_notice is True (already known), don't re-ask the boolean
+        if fact_key == "has_written_eviction_notice" and known_facts.get("has_written_eviction_notice") is True:
+            continue
+
+        # Special case: if has_written_eviction_notice is False, skip all eviction questions
+        if fact_key == "has_written_eviction_notice" and known_facts.get("has_written_eviction_notice") is False:
             continue
 
         if len(clarification_requests) >= 2:
@@ -218,7 +228,7 @@ def _build_question(
     if fact_key == "has_written_eviction_notice":
         return (
             "Have you received a formal written notice from your landlord? "
-            "If so, what type of document is it (e.g. 3-day, 30-day, Pay or Quit) and what date is on it?",
+            "If so, what type of document is it (such as a 3-day notice) and what date is listed on it?",
             "Determine legal eviction status and document type/date for SHRA / legal aid qualification",
             "Distinguishes rental assistance from formal legal defense representation",
             False,

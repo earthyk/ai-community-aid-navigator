@@ -93,6 +93,10 @@ RE_SAFETY_DISTRESS = re.compile(
     r"\bhurt\s+myself\b|"
     r"\b(?:threaten|threatened|threatening)\s+(?:to\s+)?(?:kill|hurt|harm|shoot|beat)\b|"
     r"\b(?:afraid|scared)\s+(?:(?:my|our)\s+)?(?:ex|boyfriend|husband|partner|father)\s+(?:will|might)\s+(?:hurt|kill|harm)\b|"
+    r"\bscared\s+(?:that\s+)?(?:he|she|they)\s+will\b|"
+    r"\b(?:he|she|they)\s+will\s+come\s+back\b|"
+    r"\b(?:he|she|they)\s+will\s+hurt\s+us\b|"
+    r"\bcome\s+back\s+and\s+hurt\s+us\b|"
     r"\b(?:going\s+to|might)\s+(?:hurt|kill|harm)\s+(?:him|her|someone|others)\b|"
     r"\b(?:husband|boyfriend|partner|ex)\s+(?:hits?|hitting|beats?|beating|struck)\s+(?:me|the\s+kids?|us)\b|"
     r"\bhits?\s+me\b|"
@@ -434,7 +438,7 @@ def _understand_story(
             "has_written_eviction_notice",
             True,
             fact_idx,
-            time_context="user-stated date, not an official deadline",
+            time_context=None,
         ))
         fact_idx += 1
 
@@ -784,7 +788,7 @@ def _parse_clarification(payload: Dict[str, Any], env: Dict[str, Any]) -> Dict[s
                     "value": True,
                     "confirmation_status": "proposed",
                     "source": "user_statement",
-                    "time_context": "user-stated date, not an official deadline",
+                    "time_context": None,
                 })
     else:
         uncertain = any(
