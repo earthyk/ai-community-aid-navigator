@@ -72,6 +72,7 @@ class TestAgent1(unittest.TestCase):
             "I feel unsafe at home",
             "He said he will hurt us if we don't leave.",
             "He said he will hurt us if we don\u2019t leave.",
+            "The landlord threatened to attack us.",
         ]
         for phrase in phrases:
             with self.subTest(phrase=phrase):
@@ -97,6 +98,9 @@ class TestAgent1(unittest.TestCase):
             "the contractor will come back tomorrow morning",
             "they will come back next week to inspect the property",
             "he will come back from work at 5pm",
+            "They might harm my credit score if I miss rent.",
+            "They will kill my hours at work.",
+            "They are going to beat the deadline.",
         ]
         for phrase in benign_phrases:
             with self.subTest(phrase=phrase):
