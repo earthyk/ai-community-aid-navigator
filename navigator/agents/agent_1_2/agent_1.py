@@ -76,9 +76,30 @@ RE_EVICTION_THREAT = re.compile(
 # Safety patterns — matches all 17 phrases in straight and curly quotes
 # ---------------------------------------------------------------------------
 
+# Shared target group: people, reflexive pronouns, and pets
+# Intentionally excludes inanimate objects (credit score, hours, deadline, etc.)
+_HARM_TARGETS = (
+    r"(?:me|us|her|him|them|"
+    r"myself|himself|herself|themselves|"
+    r"someone|anyone|"
+    r"(?:my|the|our)\s+(?:son|daughter|child(?:ren)?|kids?|baby)|"
+    r"(?:my|the|our)\s+(?:wife|husband|partner|mom|dad|mother|father|family)|"
+    r"(?:my|the)\s+(?:dog|cat|pets?)"
+    r")"
+)
+
+# Shared subject group: named roles (with optional article) + pronouns + possessive titles
+_HARM_SUBJECTS = (
+    r"(?:"
+    r"(?:the\s+|my\s+)?(?:landlord|partner|ex|husband|wife|roommate|manager|neighbor)|"
+    r"my\s+(?:husband|wife|partner|mom|dad|mother|father|boyfriend|girlfriend)|"
+    r"he|she|they"
+    r")"
+)
+
 RE_SAFETY_DISTRESS = re.compile(
     r"(?:"
-    r"\bkill(?:ing)?\s*(?:myself|him|her|them)\b|"
+    r"\bkill(?:ing)?\s*(?:myself|himself|herself|themselves|him|her|them)\b|"
     r"\bwant\s+to\s+die\b|"
     r"\bdon['\u2019]?t\s+want\s+to\s+(?:live|be\s+alive)(?:\s+anymore)?\b|"
     r"\b(?:want|wants)\s+to\s+end\s+my\s+life\b|"
@@ -91,24 +112,24 @@ RE_SAFETY_DISTRESS = re.compile(
     r"\bsuicide\b|"
     r"\bharm\s+myself\b|"
     r"\bhurt\s+myself\b|"
-    r"\b(?:(?:the\s+|my\s+)?(?:landlord|partner|ex|husband|wife|roommate|manager|neighbor)|he|she|they)\s+threatened\s+to\s+(?:hurt|harm|kill|beat|attack|abuse)\s+(?:me|us|her|him|them|my\s+kids?|the\s+kids?|my\s+family|our\s+family|someone|anyone)\b|"
-    r"\b(?:threaten|threatened|threatening)\s+(?:to\s+)?(?:kill|hurt|harm|shoot|beat)\s+(?:me|us|her|him|them|my\s+kids?|the\s+kids?|my\s+family|our\s+family|someone|anyone)\b|"
-    r"\b(?:afraid|scared)\s+(?:(?:my|our)\s+)?(?:ex|boyfriend|husband|partner|father)\s+(?:will|might)\s+(?:hurt|kill|harm)\b|"
-    r"\b(?:afraid|scared|worried)\s+(?:that\s+)?(?:he|she|they)\s+(?:will|might)\s+(?:come\s+back\s+(?:and\s+)?)?(?:hurt|harm|kill|beat|attack|abuse)\b|"
-    r"\b(?:he|she|they)\s+will\s+come\s+back\s+(?:and\s+)?(?:hurt|harm|kill|beat|attack|abuse)\b|"
-    r"\b(?:(?:the\s+|my\s+)?(?:landlord|partner|ex|husband|wife|roommate|manager|neighbor)|he|she|they)\s+(?:will|might|is\s+going\s+to|are\s+going\s+to|threatened\s+to|said\s+(?:he|she|they)\s+(?:will|would))\s+(?:hurt|harm|kill|beat|attack|abuse)\s+(?:me|us|her|him|them|my\s+kids?|the\s+kids?|my\s+family|our\s+family|someone|anyone)\b|"
-    r"\bcome\s+back\s+and\s+(?:hurt|harm|kill|beat|attack|abuse)\b|"
-    r"\b(?:going\s+to|might)\s+(?:hurt|kill|harm)\s+(?:him|her|someone|others)\b|"
-    r"\b(?:husband|boyfriend|partner|ex)\s+(?:hits?|hitting|beats?|beating|struck)\s+(?:me|the\s+kids?|us)\b|"
-    r"\bhits?\s+me\b|"
-    r"\bhitting\s+me\b|"
-    r"\bbeats?\s+me\b|"
-    r"\bbeating\s+me\b|"
-    r"\bunsafe\s+at\s+home\b|"
-    r"\bdanger\s+at\s+home\b|"
-    r"\bmight\s+hurt\s+someone\b|"
-    r"\bhopeless\b"
-    r")",
+    + _HARM_SUBJECTS + r"\s+threatened\s+to\s+(?:hurt|harm|kill|beat|attack|abuse)\s+" + _HARM_TARGETS + r"\b|"
+    + r"\b(?:threaten|threatened|threatening)\s+(?:to\s+)?(?:kill|hurt|harm|shoot|beat)\s+" + _HARM_TARGETS + r"\b|"
+    + r"\b(?:afraid|scared)\s+(?:(?:my|our)\s+)?(?:ex|boyfriend|husband|partner|father)\s+(?:will|might)\s+(?:hurt|kill|harm)\b|"
+    + r"\b(?:afraid|scared|worried)\s+(?:that\s+)?(?:he|she|they)\s+(?:will|might)\s+(?:come\s+back\s+(?:and\s+)?)?(?:hurt|harm|kill|beat|attack|abuse)\b|"
+    + r"\b(?:he|she|they)\s+will\s+come\s+back\s+(?:and\s+)?(?:hurt|harm|kill|beat|attack|abuse)\b|"
+    + _HARM_SUBJECTS + r"\s+(?:will|might|is\s+going\s+to|are\s+going\s+to|threatened\s+to|said\s+(?:he|she|they)\s+(?:will|would))\s+(?:hurt|harm|kill|beat|attack|abuse)\s+" + _HARM_TARGETS + r"\b|"
+    + r"\bcome\s+back\s+and\s+(?:hurt|harm|kill|beat|attack|abuse)\b|"
+    + r"\b(?:going\s+to|might)\s+(?:hurt|kill|harm)\s+(?:him|her|someone|others)\b|"
+    + r"\b(?:husband|boyfriend|partner|ex)\s+(?:hits?|hitting|beats?|beating|struck)\s+(?:me|the\s+kids?|us)\b|"
+    + r"\bhits?\s+me\b|"
+    + r"\bhitting\s+me\b|"
+    + r"\bbeats?\s+me\b|"
+    + r"\bbeating\s+me\b|"
+    + r"\bunsafe\s+at\s+home\b|"
+    + r"\bdanger\s+at\s+home\b|"
+    + r"\bmight\s+hurt\s+someone\b|"
+    + r"\bhopeless\b"
+    + r")",
     re.IGNORECASE,
 )
 

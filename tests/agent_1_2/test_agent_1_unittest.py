@@ -73,6 +73,13 @@ class TestAgent1(unittest.TestCase):
             "He said he will hurt us if we don't leave.",
             "He said he will hurt us if we don\u2019t leave.",
             "The landlord threatened to attack us.",
+            "My husband threatened to kill himself.",
+            "He threatened to hurt my son.",
+            "He will hurt my daughter.",
+            "She said she would hurt the children.",
+            "He is going to hurt my baby.",
+            "He threatened to kill my children.",
+            "They threatened to kill my dog.",
         ]
         for phrase in phrases:
             with self.subTest(phrase=phrase):
