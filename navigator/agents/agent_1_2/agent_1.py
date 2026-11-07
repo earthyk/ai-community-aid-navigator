@@ -90,11 +90,7 @@ _HARM_TARGETS = (
 
 # Shared subject group: named roles (with optional article) + pronouns + possessive titles
 _HARM_SUBJECTS = (
-    r"(?:"
-    r"(?:the\s+|my\s+)?(?:landlord|partner|ex|husband|wife|roommate|manager|neighbor)|"
-    r"my\s+(?:husband|wife|partner|mom|dad|mother|father|boyfriend|girlfriend)|"
-    r"he|she|they"
-    r")"
+    r"\b(?:he|she|they|(?:(?:the|my|our)\s+)?(?:landlord|partner|ex|husband|wife|roommate|manager|neighbor|father|mother|dad|mom|brother|sister))"
 )
 
 RE_SAFETY_DISTRESS = re.compile(

@@ -108,6 +108,9 @@ class TestAgent1(unittest.TestCase):
             "They might harm my credit score if I miss rent.",
             "They will kill my hours at work.",
             "They are going to beat the deadline.",
+            "The headache will kill me.",
+            "This toothache will kill me.",
+            "My backache is going to kill me.",
         ]
         for phrase in benign_phrases:
             with self.subTest(phrase=phrase):
