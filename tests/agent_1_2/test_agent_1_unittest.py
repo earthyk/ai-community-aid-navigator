@@ -64,26 +64,57 @@ class TestAgent1(unittest.TestCase):
             "I can't go on like this",
             "I'm scared he will come back and hurt us",
             "I'm scared she will come back and hurt us",
+            "He will come back and hurt us",
+            "She will come back and hurt us",
             "I might hurt someone",
             "I want to kill myself",
             "My partner hits me",
             "I feel unsafe at home",
         ]
         for phrase in phrases:
-            req = {
-                "request_id": "req-safe",
-                "run_id": "run-001",
-                "case_id": "case-001",
-                "case_version": 1,
-                "role_id": "agent_1",
-                "task_type": "understand_story",
-                "payload": {"story_text": phrase},
-            }
-            res = handle_agent_1(req)
-            flags = res["result"].get("safety_or_official_deadline_flags", [])
-            self.assertGreaterEqual(len(flags), 1, f"Failed to flag: {phrase}")
-            self.assertEqual(flags[0]["type"], "safety")
-            self.assertNotIn("safety_or_deadline_flags", res["result"])
+            with self.subTest(phrase=phrase):
+                req = {
+                    "request_id": "req-safe",
+                    "run_id": "run-001",
+                    "case_id": "case-001",
+                    "case_version": 1,
+                    "role_id": "agent_1",
+                    "task_type": "understand_story",
+                    "payload": {"story_text": phrase},
+                }
+                res = handle_agent_1(req)
+                flags = res["result"].get("safety_or_official_deadline_flags", [])
+                self.assertGreaterEqual(len(flags), 1, f"Failed to flag: {phrase}")
+                self.assertEqual(flags[0]["type"], "safety")
+                self.assertNotIn("safety_or_deadline_flags", res["result"])
+
+    def test_safety_signals_negative_everyday_sentences(self):
+        benign_phrases = [
+            "my landlord said he will come back to fix the heater",
+            "my landlord said she will come back to fix the heater",
+            "the contractor will come back tomorrow morning",
+            "they will come back next week to inspect the property",
+            "he will come back from work at 5pm",
+        ]
+        for phrase in benign_phrases:
+            with self.subTest(phrase=phrase):
+                req = {
+                    "request_id": "req-safe-neg",
+                    "run_id": "run-001",
+                    "case_id": "case-001",
+                    "case_version": 1,
+                    "role_id": "agent_1",
+                    "task_type": "understand_story",
+                    "payload": {"story_text": phrase},
+                }
+                res = handle_agent_1(req)
+                flags = res["result"].get("safety_or_official_deadline_flags", [])
+                safety_flags = [f for f in flags if f.get("type") == "safety"]
+                self.assertEqual(
+                    len(safety_flags),
+                    0,
+                    f"Unexpected safety flag on benign phrase: {phrase}",
+                )
 
     def test_monthly_household_income_extraction(self):
         req_approx = {
