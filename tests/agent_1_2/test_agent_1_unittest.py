@@ -70,6 +70,8 @@ class TestAgent1(unittest.TestCase):
             "I want to kill myself",
             "My partner hits me",
             "I feel unsafe at home",
+            "He said he will hurt us if we don't leave.",
+            "He said he will hurt us if we don\u2019t leave.",
         ]
         for phrase in phrases:
             with self.subTest(phrase=phrase):

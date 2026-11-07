@@ -95,6 +95,7 @@ RE_SAFETY_DISTRESS = re.compile(
     r"\b(?:afraid|scared)\s+(?:(?:my|our)\s+)?(?:ex|boyfriend|husband|partner|father)\s+(?:will|might)\s+(?:hurt|kill|harm)\b|"
     r"\b(?:afraid|scared|worried)\s+(?:that\s+)?(?:he|she|they)\s+(?:will|might)\s+(?:come\s+back\s+(?:and\s+)?)?(?:hurt|harm|kill|beat|attack|abuse)\b|"
     r"\b(?:he|she|they)\s+will\s+come\s+back\s+(?:and\s+)?(?:hurt|harm|kill|beat|attack|abuse)\b|"
+    r"\b(?:he|she|they)\s+(?:will|might|is\s+going\s+to|are\s+going\s+to|threatened\s+to|said\s+(?:he|she|they)\s+(?:will|would))\s+(?:hurt|harm|kill|beat|attack|abuse)\b|"
     r"\bcome\s+back\s+and\s+(?:hurt|harm|kill|beat|attack|abuse)\b|"
     r"\b(?:going\s+to|might)\s+(?:hurt|kill|harm)\s+(?:him|her|someone|others)\b|"
     r"\b(?:husband|boyfriend|partner|ex)\s+(?:hits?|hitting|beats?|beating|struck)\s+(?:me|the\s+kids?|us)\b|"
