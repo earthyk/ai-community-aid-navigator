@@ -1,4 +1,4 @@
-# Agents 3, 4, 5: Retrieval, Matching, Verification (owner: Silver) — v1.5
+# Agents 3, 4, 5: Retrieval, Matching, Verification (owner: Silver) — v1.6
 
 Shared JSON Contracts v1.1 (agent results still carry schema_version "1.0", as in v1.0); task_type retrieve_candidates / match_resources / verify_resources. Python 3.11+, standard library only.
 
@@ -10,7 +10,7 @@ Shared JSON Contracts v1.1 (agent results still carry schema_version "1.0", as i
 
 Each module exposes `handle(request: dict) -> dict` (AgentRequest in, AgentResult out). `is_mock` is `true` until the logic is final.
 
-**Run the tests** (from repo root): `python -m unittest discover tests -v` (20 tests)
+**Run the tests** (from repo root): `python -m unittest discover tests -v` (30 tests)
 **Regenerate samples:** `python navigator/samples/agent_3_4_5/make_samples.py`
 **Rebuild / check the KB:** `python navigator/kb/tools/build_kb.py` then `python navigator/kb/tools/validate_kb.py`
 **Review spreadsheet (optional):** `python navigator/kb/tools/make_sheet.py out.xlsx` needs `openpyxl`; it is not needed to run the agents.
@@ -39,6 +39,14 @@ Each module exposes `handle(request: dict) -> dict` (AgentRequest in, AgentResul
 
 **Same-page rule (Nov 2):** on one source page, statements about different dates (e.g. "closed now" + "reopens Nov 2") are complementary; two different values for the same field with no date difference are `conflicting`.
 
+**Changes in v1.6 (Nov 6, Julia's technical review of Nov 3):**
+- Agent 3: reports total found vs. returned and `CANDIDATES_TRUNCATED` (3.1); documented ordering (need order, subcategory match, then program_id); unknown location returns `GEOGRAPHY_UNRESOLVED`, never a coverage gap (3.2); malformed payloads return `failed` + `INPUT_INVALID` (3.3).
+- Agent 4: `supported_match` only when every criterion was evaluated; text eligibility criteria are not evaluated yet, so they are listed in `CRITERIA_NOT_EVALUATED` and the result stays `potential_match` (4.2). Income is requested only when the program's criteria mention income (4.3).
+- Agent 5: missing evidence is also an unresolved question + `EVIDENCE_MISSING` (5.1); dated statements from one page stay separate claims, with no combined "current" value (5.3).
+
 **Known limits:**
+- Criterion-based matching (Julia 4.1, 4.4) waits for structured criteria in contracts v1.2 (Slav's proposal: county/ZIP, household size, monthly income with is_approximate, employment status). Until then no program with eligibility criteria reaches `supported_match`.
+- Evidence freshness (Julia 5.2) waits for the v1.2 windows (proposal: availability 7 days, contacts/hours 30, rules/limits 90).
+- `is_mock` stays `true` until the v1.2 rule is confirmed (proposal: false for rule-based logic over the real KB).
 - Agent 4 does not compare income against limits; dollar thresholds must not be hard-coded (TD 24.1).
 - `build_program_criteria_from_kb()` in `common.py` is for local tests only; it stands in for the Supervisor.
