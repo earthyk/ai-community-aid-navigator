@@ -53,6 +53,7 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     case_facts: List[Dict[str, Any]] = payload.get("case_facts") or []
     raw_already_asked = payload.get("already_asked") or []
     candidate_requirements: List[Dict[str, Any]] = payload.get("candidate_requirements") or []
+    ambiguity_flags: List[str] = payload.get("ambiguity_flags") or []
 
     # 1. Normalize already_asked (Gate 2)
     already_asked_keys: Set[str] = set()
@@ -79,11 +80,54 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     clarification_requests: List[Dict[str, Any]] = []
     seen_keys: Set[str] = set()
 
-    # 3. Income Question — only when no candidate_requirements are provided and not already asked
+    # Step 1 — Circumstance-First Gate: ask about root cause before anything else
+    unspecified_hardship = "unspecified_hardship_cause" in ambiguity_flags
+    circumstances_already_asked = "triggering_circumstances" in already_asked_keys
+    circumstances_in_facts = "triggering_circumstances" in known_keys
+
+    if unspecified_hardship and not circumstances_already_asked and not circumstances_in_facts:
+        clarification_requests.append({
+            "fact_key": "triggering_circumstances",
+            "question_intent": "Identify root cause and circumstances of hardship",
+            "user_facing_question": (
+                "I'm sorry your family is going through a difficult time. "
+                "Could you tell me a little more about what happened that led to these financial difficulties?"
+            ),
+            "reason": "Understanding what caused the hardship determines applicable crisis and emergency programs",
+            "applicable_program_ids": [],
+            "verified_rule_ref": None,
+            "necessity_level": "helpful_for_discovery",
+            "can_skip": True,
+        })
+        seen_keys.add("triggering_circumstances")
+
+        status = "needs_clarification"
+        return {
+            "request_id": request_dict.get("request_id", "req-unknown"),
+            "run_id": request_dict.get("run_id", "run-unknown"),
+            "case_id": request_dict.get("case_id", "case-unknown"),
+            "case_version": request_dict.get("case_version", 1),
+            "correlation_id": request_dict.get("correlation_id", "corr-unknown"),
+            "agent_id": "agent_2",
+            "schema_version": schema_version_out,
+            "status": status,
+            "result": {
+                "need_updates": [],
+                "optional_food_check": False,
+            },
+            "issues": [],
+            "clarification_requests": clarification_requests,
+            "evidence_refs": [],
+            "generated_at": now_iso,
+            "is_mock": True,
+        }
+
+    # 3. Income Question — only when no candidate_requirements are provided, not already asked,
+    #    and circumstances have been established (i.e. unspecified_hardship_cause is NOT flagged)
     has_income_fact = "household_gross_monthly_income" in known_keys
     income_already_asked = "household_gross_monthly_income" in already_asked_keys
 
-    if not has_income_fact and not income_already_asked and not candidate_requirements:
+    if not has_income_fact and not income_already_asked and not candidate_requirements and not unspecified_hardship:
         clarification_requests.append({
             "fact_key": "household_gross_monthly_income",
             "question_intent": "Determine current monthly household income",

@@ -150,6 +150,15 @@ RE_JOB_LOSS = re.compile(
     re.IGNORECASE,
 )
 
+RE_TRIGGERING_EVENT = re.compile(
+    r"\b(lost\s+(?:my\s+)?job|laid\s+off|was\s+laid\s+off|unemployed|fired|"
+    r"let\s+go\s+from|medical\s+emergency|illness|accident|injury|hospital|"
+    r"rent\s+increase|unexpected\s+bill|passed\s+away|passed|died|death\s+of|"
+    r"lost\s+my\s+(?:husband|wife|partner|spouse)|sole\s+earner|divorce|"
+    r"disability|natural\s+disaster|flood|fire|evicted|eviction)\b",
+    re.IGNORECASE,
+)
+
 RE_BEREAVEMENT = re.compile(
     r"\b(passed\s+away|passed|died|death\s+of|lost\s+my\s+(?:husband|wife|partner|spouse)|"
     r"sole\s+earner|survivor\s+benefits)\b",
@@ -771,13 +780,22 @@ def _understand_story(
     if summary and not summary.endswith((".", "!", "?")):
         summary += "."
 
+    # 13. Ambiguity: unspecified hardship cause
+    ambiguity_flags: List[str] = []
+    has_aid_need = bool(
+        re.search(r"\b(food|groceries|eat|hungry|pantry|rent|housing|shelter|homeless|income|money|financial|afford)\b", story_lower)
+    )
+    has_root_cause = bool(RE_TRIGGERING_EVENT.search(story))
+    if has_aid_need and not has_root_cause:
+        ambiguity_flags.append("unspecified_hardship_cause")
+
     env["result"] = {
         "narrative_summary": summary,
         "factual_claims": facts,
         "proposed_needs": proposed_needs,
         "safety_or_official_deadline_flags": flags,
         "triggering_events": triggering_events,
-        "ambiguity_flags": [],
+        "ambiguity_flags": ambiguity_flags,
     }
     return env
 
