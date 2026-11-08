@@ -284,6 +284,125 @@ class TestRunner(unittest.TestCase):
         self.assertTrue(output.count("\n") == 0, f"Expected one line, got: {output!r}")
         self.assertIn("2026-13-40", output)
 
+    # ---------------------------------------------------------------- Fix 16 tests (ref_date in agents 6, 8, 10)
+
+    def test_ref_date_in_agents_6_8_10_payloads(self):
+        """In a full fake run with ref_date 2026-11-15:
+        Agents 1, 6, 8 (x2: normal + repair), and 10 (x2: rounds 0 and 1)
+        all carry ref_date='2026-11-15' in their payloads.
+        agent_8_repair_card02 handles both the normal and repair Agent 8 calls.
+        agent_10_flags_card02_once flags on round 0, passes on round 1.
+        """
+        fixed = datetime.date(2026, 11, 15)
+        seen = {}
+        def spy(role, fn):
+            def wrapper(req):
+                seen.setdefault(role, []).append(req["payload"])
+                return fn(req)
+            return wrapper
+        agents = dict(F.ALL,
+                      agent_1=spy("agent_1", F.agent_1),
+                      agent_6=spy("agent_6", F.agent_6),
+                      agent_8=spy("agent_8", F.agent_8_repair_card02),
+                      agent_10=spy("agent_10", F.agent_10_flags_card02_once))
+        rep = R.Run(agents, FIXTURE_KB, ref_date=fixed).execute(STORY)
+        self.assertEqual(rep["outcome"], "completed")
+        self.assertEqual(rep["ref_date"], "2026-11-15")
+        # agent_1: exactly one call, ref_date correct
+        self.assertEqual(len(seen["agent_1"]), 1)
+        self.assertEqual(seen["agent_1"][0]["ref_date"], "2026-11-15")
+        # agent_6: exactly one call
+        self.assertEqual(len(seen["agent_6"]), 1)
+        self.assertEqual(seen["agent_6"][0]["ref_date"], "2026-11-15")
+        # agent_8: exactly 2 calls (normal + 1 repair), both with correct ref_date
+        self.assertEqual(len(seen["agent_8"]), 2)
+        for p in seen["agent_8"]:
+            self.assertEqual(p["ref_date"], "2026-11-15")
+        # exactly one of the two Agent 8 calls has repair_flags
+        repair_calls = [p for p in seen["agent_8"] if "repair_flags" in p]
+        self.assertEqual(len(repair_calls), 1)
+        # agent_10: exactly 2 calls (repair_round 0 and 1), both with correct ref_date
+        self.assertEqual(len(seen["agent_10"]), 2)
+        for p in seen["agent_10"]:
+            self.assertEqual(p["ref_date"], "2026-11-15")
+        rounds = [p["repair_round"] for p in seen["agent_10"]]
+        self.assertIn(0, rounds)
+        self.assertIn(1, rounds)
+
+    def test_ref_date_none_raises_in_builders(self):
+        """agent6_request, agent8_request and agent10_request each raise ValueError
+        when ref_date is None (keyword-only argument)."""
+        from navigator.supervisor import builders as B
+        st = B.CaseState("c", "r", "x")
+        dummy_pkg = {"needs": [], "matches": [], "checked_claims": [],
+                     "program_availability": [], "evidence_records": [],
+                     "agent7_findings": []}
+        dummy_r6 = {"result": {"proposed_actions": []}}
+        dummy_req = {"request_id": "req-0001"}
+        dummy_plan = {"plan_version": "1", "action_cards": [],
+                      "potential_options": [], "coverage_gaps": []}
+        with self.assertRaises(ValueError):
+            B.agent6_request(st, dummy_pkg, [], ref_date=None)
+        with self.assertRaises(ValueError):
+            B.agent8_request(st, dummy_pkg, dummy_req, dummy_r6, ref_date=None)
+        with self.assertRaises(ValueError):
+            B.agent10_request(st, dummy_pkg, dummy_req, dummy_plan, ref_date=None)
+
+
+class TestFix6FinalValidation(unittest.TestCase):
+    """FIX 6: final_validation in report; withheld_cards in plan."""
+
+    # Passing run: PASS verdict, 0 repair rounds, empty flags and withheld_cards
+    def test_final_validation_pass(self):
+        rep = run_with()
+        fv = rep["final_validation"]
+        self.assertIsNotNone(fv)
+        self.assertEqual(fv["verdict"], "PASS")
+        self.assertEqual(fv["repair_rounds_used"], 0)
+        self.assertEqual(fv["flags"], [])
+        self.assertEqual(rep["plan"]["withheld_cards"], [])
+
+    # Withheld run: FLAG verdict, 2 repair rounds, correct flags shape, withheld_cards
+    def test_final_validation_withheld_card(self):
+        rep = run_with(agent_10=F.agent_10_always_flags_card_02)
+        fv = rep["final_validation"]
+        self.assertIsNotNone(fv)
+        self.assertEqual(fv["verdict"], "FLAG")
+        self.assertEqual(fv["repair_rounds_used"], 2)
+        # Each flag has exactly the six required keys, no user data
+        expected_keys = {"card_id", "rule_id", "severity",
+                         "blocks_release", "reason", "required_correction"}
+        for f in fv["flags"]:
+            self.assertEqual(set(f.keys()), expected_keys)
+        self.assertIn("V1", [f["rule_id"] for f in fv["flags"]])
+        # plan.withheld_cards carries rule_ids and reasons
+        self.assertEqual(rep["plan"]["withheld_cards"],
+                         [{"card_id": "card_02", "rule_ids": ["V1"],
+                           "reasons": ["guarantee"]}])
+        self.assertEqual(rep["plan"]["withheld_card_ids"], ["card_02"])
+
+    # Agent 10 flagged card_02, then repair Agent 8 crashes:
+    # outcome stopped_at_agent_8_repair but final_validation is still present
+    def test_final_validation_present_after_stopped_at_repair(self):
+        """Agent 10 ran and set _last_r10; repair Agent 8 then crashes.
+        final_validation must still be in the report (verdict FLAG)."""
+        def agent_8_crashes_on_repair(req):
+            if "repair_flags" in req.get("payload", {}):
+                raise ValueError("repair crashed")
+            return F.agent_8(req)
+        rep = run_with(agent_8=agent_8_crashes_on_repair,
+                       agent_10=F.agent_10_flags_card02_once)
+        self.assertEqual(rep["outcome"], "stopped_at_agent_8_repair")
+        fv = rep["final_validation"]
+        self.assertIsNotNone(fv)
+        self.assertEqual(fv["verdict"], "FLAG")
+
+    # Stop before Agent 10: final_validation is None
+    def test_final_validation_none_when_agent10_did_not_run(self):
+        rep = run_with(agent_3=F.crashing_agent)
+        self.assertEqual(rep["outcome"], "stopped_at_agent_3")
+        self.assertIsNone(rep["final_validation"])
+
 
 if __name__ == "__main__":
     unittest.main()

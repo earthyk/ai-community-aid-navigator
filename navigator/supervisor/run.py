@@ -1,4 +1,4 @@
-"""Supervisor runner: one end-to-end cycle, Agent 1 → 10 (Shared JSON Contracts v1.0, sections 1 and 5).
+"""Supervisor runner: one end-to-end cycle, Agent 1 → 10 (Shared JSON Contracts v1.1, sections 1 and 5).
 
 Usage (from the repo root):
     python -m navigator.supervisor.run --agents agents.json
@@ -234,13 +234,17 @@ def _today():
     return datetime.date.today()
 
 
+# Exception types that indicate a malformed accepted result (FIX 5 safety net).
+_INPUT_EXC = (KeyError, TypeError, ValueError, AttributeError, IndexError)
+
+
 # ---------------------------------------------------------------- one checked call
 class Run:
     def __init__(self, agents, kb_path, ids=None, isolate=False, ref_date=None):
         """agents: role -> AgentRef (from agents.json) or a plain function (tests).
 
         isolate=True runs every AgentRef in its own process (a timeout really stops it).
-        ref_date: a datetime.date used as the reference date for Agent 1.  Defaults
+        ref_date: a datetime.date used as the reference date for Agents 1, 6, 8 and 10.  Defaults
         to today's date at the moment the run starts.
         """
         self.agents = agents
@@ -253,6 +257,8 @@ class Run:
         self.supervisor_issues = []
         self.agent7_findings = []
         self._loaded = {}
+        self._last_r10 = None        # last accepted Agent 10 result (FIX 6)
+        self._last_r10_round = None  # repair_round index of that result
         # Use the supplied date or today; fixed for the whole run (Fix 2)
         self.ref_date = ref_date if ref_date is not None else _today()
 
@@ -303,6 +309,21 @@ class Run:
                 break           # a retry would not fix these
         return None
 
+    def _input_error(self, stage, exc):
+        """Record SUPERVISOR_INPUT_ERROR for a builder exception.
+
+        No user data in the message: only the exception type and, for KeyError
+        with a non-empty string key, the key name.
+        """
+        exc_type = type(exc).__name__
+        if isinstance(exc, KeyError) and exc.args and isinstance(exc.args[0], str):
+            detail = f"{exc_type}: {exc.args[0]}"
+        else:
+            detail = exc_type
+        self.supervisor_issues.append(checks.issue(
+            "SUPERVISOR_INPUT_ERROR", "critical",
+            f"{stage} input could not be processed: {detail}", None))
+
     def review(self, stage, req, result):
         """Agent 7 reviews a stage (contract 4.7). It never blocks: a missing or failed review is reported only."""
         if "agent_7" not in self.agents:
@@ -319,14 +340,27 @@ class Run:
 
     # ---------------------------------------------------------------- the cycle
     def execute(self, story_text, corrections=None):
+        """One end-to-end cycle.  Any builder exception is caught once here."""
+        self._stage = "agent_1"   # always set before the try so the handler has a stage
+        try:
+            return self._execute_body(story_text, corrections)
+        except _INPUT_EXC as exc:
+            self._input_error(self._stage, exc)
+            return self.report(f"stopped_at_{self._stage}")
+
+    def _execute_body(self, story_text, corrections=None):
+        """Cycle body; sets self._stage before every builder step."""
         st = self.state
+        self._stage = "agent_1"
         q1, s0 = B.agent1_request(st, story_text, ref_date=self.ref_date)
         self.supervisor_issues += s0
         r1 = self.call(q1)
         if r1 is None:
             return self.report("stopped_at_agent_1")
+        self._stage = "agent_1"        # confirm_agent1 reads r1
         B.confirm_agent1(st, r1, corrections)            # user confirms the summary (simulated here)
 
+        self._stage = "agent_2"
         if "agent_2" in self.agents:                     # soft step: it improves data, nothing depends on it
             r2 = self.call(B.agent2_request(st))
             if r2:
@@ -336,31 +370,37 @@ class Run:
                         "CLARIFICATION_PENDING", "info",
                         f"{len(r2['clarification_requests'])} question(s) for the user; demo continues without an answer"))
 
+        self._stage = "agent_3"
         q3, geo_issues = B.agent3_request(st)
         self.supervisor_issues += geo_issues
         r3 = self.call(q3)
         if r3 is None:
             return self.report("stopped_at_agent_3")
         self.review("retrieval", q3, r3)
+        self._stage = "agent_4"
         q4 = B.agent4_request(st, q3, r3, self.programs, self.evidence)
         r4 = self.call(q4)
         if r4 is None:
             return self.report("stopped_at_agent_4")
         self.review("matching", q4, r4)
+        self._stage = "agent_5"
         q5 = B.agent5_request(st, q4, r4)
         r5 = self.call(q5)
         if r5 is None:
             return self.report("stopped_at_agent_5")
         self.review("verification", q5, r5)
 
+        self._stage = "agent_6"
         pkg = B.planning_package(st, self.programs, self.evidence, r3, r4, r5, self.agent7_findings)
-        q6 = B.agent6_request(st, pkg, [q3["request_id"], q4["request_id"], q5["request_id"]])
+        q6 = B.agent6_request(st, pkg, [q3["request_id"], q4["request_id"], q5["request_id"]],
+                              ref_date=self.ref_date)
         r6 = self.call(q6)
         if r6 is None:
             return self.report("stopped_at_agent_6")
         self.review("planning", q6, r6)
+        self._stage = "agent_8"
         pkg["agent7_findings"] = self.agent7_findings
-        q8 = B.agent8_request(st, pkg, q6, r6)
+        q8 = B.agent8_request(st, pkg, q6, r6, ref_date=self.ref_date)
         r8 = self.call(q8)
         if r8 is None:
             return self.report("stopped_at_agent_8")
@@ -368,6 +408,7 @@ class Run:
         # Agent 10 + repair rounds (contract 5.3)
         # Keep the "current plan" so a repair round that returns only the fixed
         # cards does not erase the rest (Fix 1 / contracts v1.2 proposal).
+        self._stage = "agent_8"        # building current_plan reads r8
         current_plan = {
             "plan_version": r8["result"].get("plan_version"),
             "action_cards": r8["result"].get("action_cards", []),
@@ -376,36 +417,76 @@ class Run:
         }
         withheld = []
         for repair_round in range(MAX_REPAIR_ROUNDS + 1):
-            q10 = B.agent10_request(st, pkg, q8, current_plan, repair_round)
+            self._stage = "agent_10"
+            q10 = B.agent10_request(st, pkg, q8, current_plan, repair_round,
+                                    ref_date=self.ref_date)
             r10 = self.call(q10)
             if r10 is None:
                 return self.report("stopped_at_agent_10")
+            self._last_r10 = r10          # remember last accepted Agent 10 result
+            self._last_r10_round = repair_round
+            self._stage = "agent_10"   # reading flags from r10
             flags = [f for f in r10["result"].get("flags", []) if f.get("blocks_release")]
             if not flags:
                 break
             if repair_round == MAX_REPAIR_ROUNDS:
+                self._stage = "agent_10"
                 withheld = sorted({f["card_id"] for f in flags})
                 break
             # Send blocking flags to Agent 8 so it can repair those cards only
-            q8_repair = B.agent8_request(st, pkg, q6, r6)
+            self._stage = "agent_8_repair"
+            q8_repair = B.agent8_request(st, pkg, q6, r6, ref_date=self.ref_date)
             q8_repair["payload"]["repair_flags"] = flags
             r8_repair = self.call(q8_repair)
             if r8_repair is None:
                 return self.report("stopped_at_agent_8_repair")
+            self._stage = "agent_8_repair"
             # Merge repair result into the current plan (Fix 1)
             current_plan, merge_issues = merge_repaired_plan(current_plan, r8_repair)
             self.supervisor_issues += merge_issues
             # Update q8 so the next Agent 10 request references the repair call
             q8 = q8_repair
 
+        self._stage = "agent_10"       # final card filter reads withheld / current_plan
         cards = [c for c in current_plan["action_cards"] if c["card_id"] not in withheld]
+
+        # Build withheld_cards: {card_id, rule_ids, reasons} from last blocking flags (FIX 6)
+        withheld_cards = []
+        if withheld and self._last_r10 is not None:
+            last_flags = self._last_r10["result"].get("flags", [])
+            for cid in withheld:
+                blocking = [f for f in last_flags
+                            if f.get("card_id") == cid and f.get("blocks_release")]
+                withheld_cards.append({
+                    "card_id": cid,
+                    "rule_ids": [f["rule_id"] for f in blocking],
+                    "reasons":  [f["reason"]  for f in blocking],
+                })
+
         plan = {"plan_version": current_plan["plan_version"], "action_cards": cards,
                 "potential_options": current_plan["potential_options"],
                 "coverage_gaps": current_plan["coverage_gaps"],
-                "withheld_card_ids": withheld}
+                "withheld_card_ids": withheld,
+                "withheld_cards": withheld_cards}
         return self.report("completed", plan)
 
     def report(self, outcome, plan=None):
+        # Build final_validation from last accepted Agent 10 result (FIX 6).
+        # Included whenever Agent 10 ran, regardless of outcome.
+        final_validation = None
+        if self._last_r10 is not None:
+            r10res = self._last_r10["result"]
+            final_validation = {
+                "verdict":            r10res.get("verdict"),
+                "repair_rounds_used": self._last_r10_round,
+                "flags": [
+                    {k: f[k] for k in ("card_id", "rule_id", "severity",
+                                       "blocks_release", "reason",
+                                       "required_correction")}
+                    for f in r10res.get("flags", [])
+                ],
+                "passed_card_ids": r10res.get("passed_card_ids", []),
+            }
         return {
             "run_id": self.state.run_id, "case_id": self.state.case_id,
             "case_version": self.state.case_version, "outcome": outcome,
@@ -415,6 +496,7 @@ class Run:
             "agent7_findings": self.agent7_findings,
             "steps": self.steps,
             "plan": plan,
+            "final_validation": final_validation,
         }
 
 
@@ -457,7 +539,7 @@ def main(argv=None):
     ap.add_argument("--no-isolate", action="store_true",
                     help="run agents inside this process (faster; a timed-out agent keeps running)")
     ap.add_argument("--ref-date", metavar="YYYY-MM-DD",
-                    help="reference date for Agent 1 (ISO format); defaults to today")
+                    help="reference date for Agents 1, 6, 8 and 10 (ISO format); defaults to today")
     ap.add_argument("--out", default="run_report.json")
     a = ap.parse_args(argv)
 
