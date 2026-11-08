@@ -80,6 +80,9 @@ class TestAgent1(unittest.TestCase):
             "He is going to hurt my baby.",
             "He threatened to kill my children.",
             "They threatened to kill my dog.",
+            "My boyfriend will hurt me.",
+            "My girlfriend is going to hurt the kids.",
+            "My boyfriend said he would kill us.",
         ]
         for phrase in phrases:
             with self.subTest(phrase=phrase):
