@@ -101,7 +101,6 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
         })
         seen_keys.add("triggering_circumstances")
 
-        status = "needs_clarification"
         return {
             "request_id": request_dict.get("request_id", "req-unknown"),
             "run_id": request_dict.get("run_id", "run-unknown"),
@@ -110,7 +109,7 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             "correlation_id": request_dict.get("correlation_id", "corr-unknown"),
             "agent_id": "agent_2",
             "schema_version": schema_version_out,
-            "status": status,
+            "status": "needs_clarification",
             "result": {
                 "need_updates": [],
                 "optional_food_check": False,
@@ -124,10 +123,24 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
 
     # 3. Income Question — only when no candidate_requirements are provided, not already asked,
     #    and circumstances have been established (i.e. unspecified_hardship_cause is NOT flagged)
+    # 3. Income Question — ask only when:
+    #    - income is not already known
+    #    - income has not been asked
+    #    - no candidate_requirements are pending
+    #    - circumstances are not flagged as unspecified
+    #    - no active eviction notice follow-up is being asked on this turn
     has_income_fact = "household_gross_monthly_income" in known_keys
     income_already_asked = "household_gross_monthly_income" in already_asked_keys
+    notice_is_reported = known_facts.get("has_written_eviction_notice") is True
+    eviction_followup_pending = notice_is_reported and ("eviction_notice_type" not in already_asked_keys) and ("eviction_notice_type" not in known_keys)
 
-    if not has_income_fact and not income_already_asked and not candidate_requirements and not unspecified_hardship:
+    if (
+        not has_income_fact
+        and not income_already_asked
+        and not candidate_requirements
+        and not unspecified_hardship
+        and not eviction_followup_pending
+    ):
         clarification_requests.append({
             "fact_key": "household_gross_monthly_income",
             "question_intent": "Determine current monthly household income",

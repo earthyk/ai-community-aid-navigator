@@ -66,8 +66,9 @@ RE_EVICTION_AFFIRMATIVE = re.compile(
 
 # Eviction threat: landlord verbally threatened eviction (no written notice required)
 RE_EVICTION_THREAT = re.compile(
-    r"\b(?:landlord|owner)\s+(?:said\s+)?(?:he\s+|she\s+|they\s+)?(?:will|threatened\s+to|plans\s+to|is\s+going\s+to)\s+evict\b|"
-    r"\bthreatened\s+(?:us\s+|me\s+)?with\s+eviction\b|"
+r"\b(?:landlord|owner)\s+(?:said\s+)?(?:he\s+|she\s+|they\s+)?(?:will|threatened\s+to|plans\s+to|is\s+going\s+to)\s+(?:evict|lock\s+(?:us|me)\s+out)\b|"
+    r"\bthreatened\s+(?:us\s+|me\s+)?(?:with\s+eviction|to\s+lock\s+(?:us|me)\s+out)\b|"
+    r"\b(?:lock\s+(?:us|me)\s+out|locked\s+out)\b|"
     r"\bfacing\s+eviction\b",
     re.IGNORECASE,
 )
@@ -151,8 +152,9 @@ RE_JOB_LOSS = re.compile(
 )
 
 RE_TRIGGERING_EVENT = re.compile(
-    r"\b(lost\s+(?:my\s+)?job|laid\s+off|was\s+laid\s+off|unemployed|fired|"
-    r"let\s+go\s+from|medical\s+emergency|illness|accident|injury|hospital|"
+r"\b(lost\s+(?:my\s+)?job|laid\s+off|was\s+laid\s+off|unemployed|fired|"
+    r"hours?\s+cut|cut\s+(?:my\s+)?hours?|reduced\s+hours?|pay\s+cut|"
+    r"let\s+go\s+from|medical\s+emergency|hospitalization|hospital\s+bill|illness|accident|injury|hospital|"
     r"rent\s+increase|unexpected\s+bill|passed\s+away|passed|died|death\s+of|"
     r"lost\s+my\s+(?:husband|wife|partner|spouse)|sole\s+earner|divorce|"
     r"disability|natural\s+disaster|flood|fire|evicted|eviction)\b",
@@ -676,18 +678,23 @@ def _understand_story(
         ))
         need_idx += 1
 
+# Medical Triggering Event
+    if re.search(r"\b(medical\s+emergency|hospitalization|hospital\s+bill|asthma|accident|injury)\b", story_lower):
+        if "medical_emergency" not in triggering_events:
+            triggering_events.append("medical_emergency")
+
     if re.search(
-        r"\b(broke\s+my\s+leg|hospital\s+bills|health\s+insurance|prescription\s+medication|medical)\b",
+        r"\b(broke\s+my\s+leg|hospital\s+bills?|hospitalization|health\s+insurance|prescription\s+medication|medical|asthma)\b",
         story_lower,
     ):
-        med_quote = extract_full_sentence_quote(r"leg|hospital|bills|insurance|medication|medical", story)
+        med_quote = extract_full_sentence_quote(r"leg|hospital|bills?|insurance|medication|medical|asthma", story)
         proposed_needs.append(_make_need(
             "medical_health_coverage",
             need_idx,
-            description="Medical bills or lack of health insurance coverage",
+            description="Medical bills or urgent healthcare expenses reported",
             original_quote=med_quote,
             urgency="high",
-            urgency_reason="Uninsured medical expenses",
+            urgency_reason="Unplanned emergency medical expenses impacting basic stability",
         ))
         need_idx += 1
 
@@ -805,46 +812,150 @@ def _parse_clarification(payload: Dict[str, Any], env: Dict[str, Any]) -> Dict[s
     ans = normalize_text(ans_raw).strip()
     keys = payload.get("pending_fact_keys", [])
     facts: List[Dict[str, Any]] = []
-
     ans_lower = ans.lower()
 
-    has_yes = bool(
-        re.search(
-            r"\b(yes|yeah|yep|i have one|received|got a notice|got a 3-day notice)\b",
-            ans_lower,
+    # 1. Eviction Notice Status & Follow-up Parsing
+    if "has_written_eviction_notice" in keys or "eviction_notice_type" in keys:
+        has_yes = bool(
+            re.search(
+                r"\b(yes|yeah|yep|i have one|received|got a notice|got a 3-day notice)\b",
+                ans_lower,
+            )
         )
-    )
-
-    if has_yes:
-        for k in keys:
-            if k == "has_written_eviction_notice":
+        if has_yes and "has_written_eviction_notice" in keys:
+            facts.append({
+                "fact_id": _fact_id("has_written_eviction_notice", len(facts) + 1),
+                "field": "has_written_eviction_notice",
+                "value": True,
+                "confirmation_status": "proposed",
+                "source": "user_statement",
+                "time_context": None,
+            })
+        else:
+            uncertain = any(
+                w in ans_lower for w in ["not sure", "don't know", "maybe", "waiting to see"]
+            )
+            has_no = bool(
+                re.search(r"\b(no|nope|don'?t have|never|did not|nothing yet)\b", ans_lower)
+            )
+            if not uncertain and has_no and "has_written_eviction_notice" in keys:
                 facts.append({
-                    "fact_id": _fact_id(k, 1),
-                    "field": k,
-                    "value": True,
+                    "fact_id": _fact_id("has_written_eviction_notice", len(facts) + 1),
+                    "field": "has_written_eviction_notice",
+                    "value": False,
                     "confirmation_status": "proposed",
                     "source": "user_statement",
-                    "time_context": None,
+                    "time_context": "current",
                 })
-    else:
-        uncertain = any(
-            w in ans_lower for w in ["not sure", "don't know", "maybe", "waiting to see"]
-        )
-        has_no = bool(
-            re.search(r"\b(no|nope|don'?t have|never|did not|nothing yet)\b", ans_lower)
-        )
 
-        if not uncertain and has_no:
-            for k in keys:
-                if k == "has_written_eviction_notice":
+        # Notice Date Extraction (e.g., "November 6, 2026" or "Nov 6")
+        date_m = re.search(r"\b([A-Za-z]+)\s+(\d{1,2}),?\s*(\d{4})?\b", ans)
+        if date_m:
+            month_str, day_str, year_str = date_m.group(1), int(date_m.group(2)), date_m.group(3)
+            month_num = MONTH_MAP.get(month_str.lower())
+            if month_num and 1 <= day_str <= 31:
+                year_val = int(year_str) if year_str else 2026
+                iso_date = f"{year_val:04d}-{month_num:02d}-{day_str:02d}"
+                facts.append({
+                    "fact_id": _fact_id("eviction_notice_date", len(facts) + 1),
+                    "field": "eviction_notice_date",
+                    "value": iso_date,
+                    "confirmation_status": "proposed",
+                    "source": "user_statement",
+                    "time_context": "user_clarification",
+                })
+
+    # 2. Triggering Circumstances
+    if "triggering_circumstances" in keys:
+        circumstance_val = None
+        if re.search(r"\b(hours?\s+cut|cut\s+(?:my\s+)?hours?|reduced\s+hours?|pay\s+cut)\b", ans_lower):
+            circumstance_val = "reduced_hours"
+        elif re.search(r"\b(laid\s+off|lost\s+(?:my\s+)?job|fired|unemployed)\b", ans_lower):
+            circumstance_val = "job_loss"
+        elif re.search(r"\b(medical|hospital|hospitalization|sick|illness|injury|accident|asthma)\b", ans_lower):
+            circumstance_val = "medical_emergency"
+        elif re.search(r"\b(died|passed\s+away|bereavement|funeral)\b", ans_lower):
+            circumstance_val = "bereavement"
+
+        if circumstance_val:
+            facts.append({
+                "fact_id": _fact_id("triggering_circumstances", len(facts) + 1),
+                "field": "triggering_circumstances",
+                "value": circumstance_val,
+                "confirmation_status": "proposed",
+                "source": "user_statement",
+                "time_context": "recent",
+            })
+
+    # 3. Monthly Income Parsing (Guarded against rent/bills/arrears)
+    if "household_gross_monthly_income" in keys:
+        is_rent_or_due = bool(re.search(r"\b(rent|due|bill|owe|owing|left|account|balance)\b", ans_lower))
+
+        inc_m = RE_INCOME_STANDARD.search(ans) or RE_INCOME_BENEFIT.search(ans)
+        if inc_m and not is_rent_or_due:
+            try:
+                val = int(inc_m.group(1).replace(",", ""))
+                facts.append({
+                    "fact_id": _fact_id("household_gross_monthly_income", len(facts) + 1),
+                    "field": "household_gross_monthly_income",
+                    "value": val,
+                    "confirmation_status": "proposed",
+                    "source": "user_statement",
+                    "time_context": "current",
+                })
+            except ValueError:
+                pass
+        elif not is_rent_or_due:
+            num_m = re.search(r"^\$?([0-9,]+)$|\b(?:about|around)\s+\$?([0-9,]+)\b", ans_lower)
+            if num_m:
+                raw_num = num_m.group(1) or num_m.group(2)
+                try:
+                    val = int(raw_num.replace(",", ""))
                     facts.append({
-                        "fact_id": _fact_id(k, 1),
-                        "field": k,
-                        "value": False,
+                        "fact_id": _fact_id("household_gross_monthly_income", len(facts) + 1),
+                        "field": "household_gross_monthly_income",
+                        "value": val,
                         "confirmation_status": "proposed",
                         "source": "user_statement",
                         "time_context": "current",
                     })
+                except ValueError:
+                    pass
+
+    # 4. Rent Amount & Overdue Amount Extraction
+    rent_m = re.search(r"\b(?:rent|amount\s+due)\b[^\.\;\n]*?\$?([0-9,]+)", ans, re.I)
+    if rent_m:
+        try:
+            r_val = int(rent_m.group(1).replace(",", ""))
+            facts.append({
+                "fact_id": _fact_id("rent_amount_monthly", len(facts) + 1),
+                "field": "rent_amount_monthly",
+                "value": r_val,
+                "confirmation_status": "proposed",
+                "source": "user_statement",
+                "time_context": "current",
+            })
+        except ValueError:
+            pass
+
+    # 5. Liquid Cash Extraction (Tight boundary — must directly follow amount)
+    cash_m = (
+        re.search(r"\$([0-9,]+)\s*(?:left|in\s+(?:cash|savings|my\s+account|the\s+bank|account))", ans_lower)
+        or re.search(r"\b(?:have|only\s+have|left\s+with)\s+(?:about\s+|around\s+)?\$([0-9,]+)", ans_lower)
+    )
+    if cash_m:
+        try:
+            c_val = int(cash_m.group(1).replace(",", ""))
+            facts.append({
+                "fact_id": _fact_id("cash_on_hand_approx", len(facts) + 1),
+                "field": "cash_on_hand_approx",
+                "value": c_val,
+                "confirmation_status": "proposed",
+                "source": "user_statement",
+                "time_context": "current",
+            })
+        except ValueError:
+            pass
 
     env["result"] = {
         "factual_claims": facts,
