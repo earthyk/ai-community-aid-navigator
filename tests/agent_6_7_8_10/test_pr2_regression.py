@@ -544,14 +544,17 @@ class TestA1002FalseCoverage(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# C-OD2: Overdue rent + food need → housing action first
-#         (and: no overdue signal → normal sort order, NOT forced housing-first)
+# C-OD2: §15.2 overdue rent / eviction ordering
+#         Overdue rent does NOT force housing first (rule 4).
+#         Confirmed late legal stage (sheriff etc.) forces housing first (rule 3).
 # ---------------------------------------------------------------------------
 
 class TestCOD2OverdueRentFoodOrdering(unittest.TestCase):
-    """Housing goes before food ONLY when the case shows overdue rent (or an
-    eviction/utility-shutoff notice).  Without that signal the sort must use
-    the normal A6-03 order (deadline, target date, processing time)."""
+    """§15.2 rules 3 & 4:
+    - Overdue rent (past or today) does NOT place housing above food.
+    - Confirmed late legal stage (sheriff, writ, court judgment) → housing first.
+    - Without any signal the normal sort order applies.
+    """
 
     def _make_needs_matches(self):
         needs = [
@@ -567,12 +570,12 @@ class TestCOD2OverdueRentFoodOrdering(unittest.TestCase):
         avail = [_open_avail("PROG-HOUSING"), _open_avail("PROG-FOOD")]
         return needs, matches, avail
 
-    def test_housing_before_food_with_overdue_rent(self):
-        """Overdue rent date in facts (strictly before ref_date) → housing sorts first."""
+    def test_overdue_rent_does_NOT_put_housing_first(self):
+        """§15.2 rule 4: overdue rent (past rent_due_date) must NOT place housing
+        above food.  Food stays first (or at least equal)."""
         needs, matches, avail = self._make_needs_matches()
-        # rent_due_date in the past (2026-10-01 < ref_date 2026-11-01) → overdue signal
         overdue_facts = [{"fact_id": "f1", "field": "rent_due_date",
-                          "value": "2026-10-01",
+                          "value": "2026-10-01",  # before ref_date → overdue
                           "confirmation_status": "confirmed",
                           "source": "user_statement", "time_context": None}]
         payload = {
@@ -583,19 +586,20 @@ class TestCOD2OverdueRentFoodOrdering(unittest.TestCase):
             "evidence_records": [],
             "timing": [],
             "case_facts": overdue_facts,
-            "ref_date": "2026-11-01",  # PR #13: ref_date required for overdue comparison
+            "ref_date": "2026-11-01",
         }
         acts = handle(_req("agent_6", payload))["result"]["proposed_actions"]
         pids = [a["program_id"] for a in acts if a["program_id"]]
         housing_idx = pids.index("PROG-HOUSING")
         food_idx = pids.index("PROG-FOOD")
-        self.assertLess(
-            housing_idx, food_idx,
-            f"Housing must come before food when rent is overdue; got {pids}",
+        # Overdue rent must NOT flip order; food stays first (or tied).
+        self.assertLessEqual(
+            food_idx, housing_idx,
+            f"Overdue rent must not place housing before food (§15.2 rule 4); got {pids}",
         )
 
     def test_no_overdue_signal_does_not_force_housing_first(self):
-        """Without an overdue-housing signal, housing does NOT jump ahead of food."""
+        """Without any housing signal, housing does NOT jump ahead of food."""
         needs, matches, avail = self._make_needs_matches()
         # No case_facts with rent_due_date or notice fields → no overdue signal.
         acts = _run6(
@@ -612,7 +616,7 @@ class TestCOD2OverdueRentFoodOrdering(unittest.TestCase):
         housing_idx = pids.index("PROG-HOUSING")
         self.assertLess(
             food_idx, housing_idx,
-            f"Without an overdue signal, food-first input must stay food-first; got {pids}",
+            f"Without a housing signal, food-first input must stay food-first; got {pids}",
         )
 
 
@@ -823,10 +827,10 @@ class TestPR13Item4RefDate(unittest.TestCase):
             _match("PROG-HOUSING", ["need_housing"], subcategory="rental_assistance"),
         ]
         avail = [_open_avail("PROG-FOOD"), _open_avail("PROG-HOUSING")]
-        # Sheriff notice in case_facts but NO ref_date → overdue logic must be skipped.
-        # Without ref_date, even a sheriff fact must not trigger housing-first.
-        facts = [{"fact_id": "f1", "field": "sheriff_notice",
-                  "value": True,
+        # Sheriff-type notice in case_facts but NO ref_date → overdue logic must be skipped.
+        # Without ref_date, even a late-stage eviction_notice_type must not trigger housing-first.
+        facts = [{"fact_id": "f1", "field": "eviction_notice_type",
+                  "value": "Sheriff's notice to vacate",
                   "confirmation_status": "confirmed",
                   "source": "user_statement", "time_context": None}]
         payload = {
@@ -895,19 +899,20 @@ class TestPR13Item5OrderingRules(unittest.TestCase):
         ]
 
     def test_food_tomorrow_plus_30day_notice_puts_food_first(self):
-        """food tomorrow + 30-day eviction notice → food is the sooner dated consequence."""
+        """food tomorrow + 30-day eviction notice (early stage) → food first.
+        The notice type is known (30-day) so EVICTION_STAGE_UNKNOWN is NOT raised."""
         needs = self._needs_food_housing()
         matches = self._matches_food_housing()
         avail = [_open_avail("PROG-FOOD"), _open_avail("PROG-HOUSING")]
         ref = "2026-11-01"
-        # 30-day notice: eviction date is 2026-12-01 (30 days out)
+        # 30-day notice: early stage — eviction_notice_type tells us the type.
         case_facts = [
             {"fact_id": "f1", "field": "has_written_eviction_notice",
              "value": True,
              "confirmation_status": "confirmed",
              "source": "user_statement", "time_context": None},
-            {"fact_id": "f2", "field": "eviction_date",
-             "value": "2026-12-01",
+            {"fact_id": "f2", "field": "eviction_notice_type",
+             "value": "30-day notice to vacate",
              "confirmation_status": "confirmed",
              "source": "user_statement", "time_context": None},
         ]
@@ -951,14 +956,14 @@ class TestPR13Item5OrderingRules(unittest.TestCase):
                          f"got {housing_action['order_group']}")
 
     def test_sheriff_in_2_days_puts_housing_first(self):
-        """Sheriff enforcement in 2 days → housing first."""
+        """Sheriff notice (eviction_notice_type text) → housing first."""
         needs = self._needs_food_housing(food_urg="immediate", housing_urg="immediate")
         matches = self._matches_food_housing()
         avail = [_open_avail("PROG-FOOD"), _open_avail("PROG-HOUSING")]
         ref = "2026-11-01"
         case_facts = [
-            {"fact_id": "f1", "field": "sheriff_notice",
-             "value": True,
+            {"fact_id": "f1", "field": "eviction_notice_type",
+             "value": "Sheriff's notice to vacate",
              "confirmation_status": "confirmed",
              "source": "user_statement", "time_context": None},
         ]
@@ -996,16 +1001,18 @@ class TestPR13Item5OrderingRules(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# PR #13 Item 6: user_priority respected
+# PR #13 Item 6 (revised §15.2 rule 5): user_priority must NOT change order_group
 # ---------------------------------------------------------------------------
 
 class TestPR13Item6UserPriority(unittest.TestCase):
-    """A need with user_priority=1 must not be in a later group than other needs
-    of the same or lower urgency."""
+    """§15.2 rule 5: need.user_priority must NOT change order_group or urgency.
+    A 'high' urgency need with user_priority=1 stays in 'parallel' (its urgency
+    group), not promoted to 'first'.  User preference is kept separate from
+    action ordering."""
 
-    def test_user_priority_1_not_demoted_to_later_group(self):
-        """A 'high' urgency need ranked 1 by the user must land in 'first', not
-        'parallel' (which is the default group for 'high' urgency)."""
+    def test_user_priority_1_does_not_change_order_group(self):
+        """§15.2 rule 5: user_priority=1 on a 'high' urgency need must NOT
+        promote it to 'first'; it stays in 'parallel'."""
         needs = [
             dict(_need("need_A", category="food_assistance",
                        subcategory="food_pantry", urgency="high"),
@@ -1020,16 +1027,10 @@ class TestPR13Item6UserPriority(unittest.TestCase):
         avail = [_open_avail("PROG-A"), _open_avail("PROG-B")]
         acts = _run6(needs, matches, program_availability=avail, ref_date="2026-11-01")
         a_action = next(a for a in acts if a["program_id"] == "PROG-A")
-        b_action = next(a for a in acts if a["program_id"] == "PROG-B")
-        # PROG-A (user_priority=1) must be in "first" group; PROG-B (no priority) in "parallel".
-        self.assertEqual(a_action["order_group"], "first",
-                         f"user_priority=1 must promote to 'first'; got {a_action['order_group']}")
-        # PROG-A must not appear in a later group than PROG-B.
-        a_rank = {"first": 0, "parallel": 1, "later": 2}[a_action["order_group"]]
-        b_rank = {"first": 0, "parallel": 1, "later": 2}[b_action["order_group"]]
-        self.assertLessEqual(a_rank, b_rank,
-                             f"user_priority=1 need must not be in a later group; "
-                             f"A={a_action['order_group']}, B={b_action['order_group']}")
+        # 'high' urgency → 'parallel' group regardless of user_priority.
+        self.assertEqual(a_action["order_group"], "parallel",
+                         f"user_priority=1 must NOT promote 'high' urgency to 'first'; "
+                         f"got {a_action['order_group']}")
 
 
 # ---------------------------------------------------------------------------
@@ -1345,6 +1346,658 @@ class TestPR13Item12OpenOptionFirst(unittest.TestCase):
         self.assertIn("Use an open option first", closed_action["rationale"],
                       f"Open alternative exists — must say 'Use an open option first': "
                       f"{closed_action['rationale']!r}")
+
+
+# ---------------------------------------------------------------------------
+# §15.2 New tests: undated notice + food tomorrow keeps food first + EVICTION_STAGE_UNKNOWN
+# ---------------------------------------------------------------------------
+
+class TestEvictionStageUnknown(unittest.TestCase):
+    """§15.2 rule 2: eviction notice with no date or unknown stage must NOT put
+    housing first; Agent 6 must raise EVICTION_STAGE_UNKNOWN (warning) and order
+    the housing action as a normal need."""
+
+    def _needs_food_housing(self, food_urg="immediate", housing_urg="high"):
+        return [
+            _need("need_food", category="food_assistance",
+                  subcategory="food_pantry", urgency=food_urg),
+            _need("need_housing", category="housing_assistance",
+                  subcategory="rental_assistance", urgency=housing_urg),
+        ]
+
+    def _matches_food_housing(self):
+        return [
+            _match("PROG-FOOD", ["need_food"], subcategory="food_pantry"),
+            _match("PROG-HOUSING", ["need_housing"], subcategory="rental_assistance"),
+        ]
+
+    def test_undated_notice_plus_food_tomorrow_keeps_food_first(self):
+        """§15.2 rule 2: eviction notice with no date + food running out tomorrow
+        must keep food at least equal to housing and raise EVICTION_STAGE_UNKNOWN."""
+        needs = self._needs_food_housing(food_urg="immediate", housing_urg="high")
+        matches = self._matches_food_housing()
+        avail = [_open_avail("PROG-FOOD"), _open_avail("PROG-HOUSING")]
+        case_facts = [
+            {"fact_id": "f1", "field": "has_written_eviction_notice",
+             "value": True,   # notice exists but no eviction_date
+             "confirmation_status": "confirmed",
+             "source": "user_statement", "time_context": None},
+        ]
+        timing = [
+            {"program_id": "PROG-FOOD", "need_id": "need_food",
+             "official_deadline": None,
+             "user_target_date": "2026-11-02",   # food tomorrow
+             "estimated_processing_time": None},
+        ]
+        result = handle(_req("agent_6", {
+            "needs": needs,
+            "matches": [matches[0], matches[1]],
+            "checked_claims": [],
+            "program_availability": avail,
+            "evidence_records": [],
+            "timing": timing,
+            "case_facts": case_facts,
+            "ref_date": "2026-11-01",
+        }))
+        acts = result["result"]["proposed_actions"]
+        pids = [a["program_id"] for a in acts if a["program_id"]]
+        food_idx = pids.index("PROG-FOOD")
+        housing_idx = pids.index("PROG-HOUSING")
+        # Food must stay first (or tied) — undated notice must NOT override food urgency.
+        self.assertLessEqual(food_idx, housing_idx,
+                             f"Undated notice + food tomorrow: food must stay first; got {pids}")
+        # EVICTION_STAGE_UNKNOWN issue must be raised.
+        codes = [i["code"] for i in result["issues"]]
+        self.assertIn("EVICTION_STAGE_UNKNOWN", codes,
+                      f"Expected EVICTION_STAGE_UNKNOWN issue; got {codes}")
+
+    def test_undated_notice_raises_eviction_stage_unknown(self):
+        """§15.2 rule 2: any eviction notice without confirmed late stage raises
+        EVICTION_STAGE_UNKNOWN asking for notice type, date, court case, judgment."""
+        needs = self._needs_food_housing()
+        matches = self._matches_food_housing()
+        avail = [_open_avail("PROG-FOOD"), _open_avail("PROG-HOUSING")]
+        case_facts = [
+            {"fact_id": "f1", "field": "has_written_eviction_notice",
+             "value": True,
+             "confirmation_status": "confirmed",
+             "source": "user_statement", "time_context": None},
+        ]
+        result = handle(_req("agent_6", {
+            "needs": needs,
+            "matches": [matches[0], matches[1]],
+            "checked_claims": [],
+            "program_availability": avail,
+            "evidence_records": [],
+            "timing": [],
+            "case_facts": case_facts,
+            "ref_date": "2026-11-01",
+        }))
+        codes = [i["code"] for i in result["issues"]]
+        self.assertIn("EVICTION_STAGE_UNKNOWN", codes,
+                      f"Expected EVICTION_STAGE_UNKNOWN for undated notice; got {codes}")
+        # The issue message must ask the Supervisor for clarification details.
+        ev_issue = next(i for i in result["issues"] if i["code"] == "EVICTION_STAGE_UNKNOWN")
+        msg = ev_issue["message"].lower()
+        self.assertIn("notice type", msg,
+                      f"Issue message must mention 'notice type': {msg!r}")
+        self.assertIn("court", msg,
+                      f"Issue message must mention 'court': {msg!r}")
+
+
+# ---------------------------------------------------------------------------
+# §15.2 New: 3-day notice (early stage) + food tomorrow keeps food first
+# ---------------------------------------------------------------------------
+
+class TestEarlyStageEvictionFoodFirst(unittest.TestCase):
+    """§15.2: a 3-day pay-or-quit notice (early eviction stage) + food
+    running out tomorrow must keep food first, NOT trigger housing-first,
+    and must NOT raise EVICTION_STAGE_UNKNOWN (type is known)."""
+
+    def test_3day_notice_early_stage_food_first(self):
+        """eviction_notice_type '3-day pay or quit' + food tomorrow → food stays first,
+        no EVICTION_STAGE_UNKNOWN (type is present)."""
+        needs = [
+            _need("need_food", category="food_assistance",
+                  subcategory="food_pantry", urgency="immediate"),
+            _need("need_housing", category="housing_assistance",
+                  subcategory="rental_assistance", urgency="high"),
+        ]
+        matches = [
+            _match("PROG-FOOD", ["need_food"], subcategory="food_pantry"),
+            _match("PROG-HOUSING", ["need_housing"], subcategory="rental_assistance"),
+        ]
+        avail = [_open_avail("PROG-FOOD"), _open_avail("PROG-HOUSING")]
+        # 3-day pay-or-quit: early stage — type is known, not a late stage keyword.
+        case_facts = [
+            {"fact_id": "f1", "field": "has_written_eviction_notice",
+             "value": True,
+             "confirmation_status": "confirmed",
+             "source": "user_statement", "time_context": None},
+            {"fact_id": "f2", "field": "eviction_notice_type",
+             "value": "3-day pay or quit",
+             "confirmation_status": "confirmed",
+             "source": "user_statement", "time_context": None},
+        ]
+        timing = [
+            {"program_id": "PROG-FOOD", "need_id": "need_food",
+             "official_deadline": None,
+             "user_target_date": "2026-11-02",   # food tomorrow
+             "estimated_processing_time": None},
+        ]
+        result = handle(_req("agent_6", {
+            "needs": needs,
+            "matches": [matches[0], matches[1]],
+            "checked_claims": [],
+            "program_availability": avail,
+            "evidence_records": [],
+            "timing": timing,
+            "case_facts": case_facts,
+            "ref_date": "2026-11-01",
+        }))
+        acts = result["result"]["proposed_actions"]
+        pids = [a["program_id"] for a in acts if a["program_id"]]
+        food_idx = pids.index("PROG-FOOD")
+        housing_idx = pids.index("PROG-HOUSING")
+        # food is "immediate" → "first" group; housing is "high" → "parallel".
+        self.assertLess(food_idx, housing_idx,
+                        f"3-day pay-or-quit + food tomorrow: food must stay first; got {pids}")
+        # eviction_notice_type is present → no EVICTION_STAGE_UNKNOWN
+        codes = [i["code"] for i in result["issues"]]
+        self.assertNotIn("EVICTION_STAGE_UNKNOWN", codes,
+                         f"3-day notice type is known — must not raise EVICTION_STAGE_UNKNOWN; got {codes}")
+
+
+# ---------------------------------------------------------------------------
+# §15.2 New: sheriff/lockout notice puts emergency shelter and legal help first
+# ---------------------------------------------------------------------------
+
+class TestSheriffLockoutShelterLegalFirst(unittest.TestCase):
+    """§15.2 rule 3: a sheriff/lockout notice must put emergency shelter and
+    housing legal aid first (not rental assistance), and mark them as not
+    guaranteed."""
+
+    def test_sheriff_notice_shelter_legal_first_not_rental(self):
+        """eviction_notice_type 'Sheriff's notice to vacate, lockout Nov 11' →
+        emergency_shelter and housing_legal_aid go first (not rental assistance).
+        Help is not guaranteed (uncertainty note on shelter/legal).
+        No EVICTION_STAGE_UNKNOWN (type is known)."""
+        needs = [
+            _need("need_shelter", category="housing_assistance",
+                  subcategory="emergency_shelter", urgency="immediate"),
+            _need("need_legal", category="housing_assistance",
+                  subcategory="housing_legal_aid", urgency="immediate"),
+            _need("need_rental", category="housing_assistance",
+                  subcategory="rental_assistance", urgency="high"),
+        ]
+        matches = [
+            _match("PROG-SHELTER", ["need_shelter"], subcategory="emergency_shelter"),
+            _match("PROG-LEGAL", ["need_legal"], subcategory="housing_legal_aid"),
+            _match("PROG-RENTAL", ["need_rental"], subcategory="rental_assistance"),
+        ]
+        avail = [_open_avail("PROG-SHELTER"), _open_avail("PROG-LEGAL"), _open_avail("PROG-RENTAL")]
+        case_facts = [
+            {"fact_id": "f1", "field": "eviction_notice_type",
+             "value": "Sheriff's notice to vacate, lockout Nov 11",
+             "confirmation_status": "confirmed",
+             "source": "user_statement", "time_context": None},
+        ]
+        result = handle(_req("agent_6", {
+            "needs": needs,
+            "matches": [matches[2], matches[1], matches[0]],  # rental first in input
+            "checked_claims": [],
+            "program_availability": avail,
+            "evidence_records": [],
+            "timing": [],
+            "case_facts": case_facts,
+            "ref_date": "2026-11-01",
+        }))
+        acts = result["result"]["proposed_actions"]
+        pids = [a["program_id"] for a in acts if a["program_id"]]
+        shelter_idx = pids.index("PROG-SHELTER")
+        legal_idx = pids.index("PROG-LEGAL")
+        rental_idx = pids.index("PROG-RENTAL")
+        # shelter and legal must come before rental
+        self.assertLess(shelter_idx, rental_idx,
+                        f"Sheriff notice: PROG-SHELTER must precede PROG-RENTAL; got {pids}")
+        self.assertLess(legal_idx, rental_idx,
+                        f"Sheriff notice: PROG-LEGAL must precede PROG-RENTAL; got {pids}")
+        # emergency shelter action must carry a "not guaranteed" uncertainty note
+        shelter_action = next(a for a in acts if a["program_id"] == "PROG-SHELTER")
+        notes_text = " ".join(shelter_action.get("uncertainty_notes", []))
+        self.assertIn("not guaranteed", notes_text,
+                      f"Shelter action must say help is not guaranteed; got notes: {notes_text!r}")
+        # eviction_notice_type is present → no EVICTION_STAGE_UNKNOWN
+        codes = [i["code"] for i in result["issues"]]
+        self.assertNotIn("EVICTION_STAGE_UNKNOWN", codes,
+                         f"Type is known — must not raise EVICTION_STAGE_UNKNOWN; got {codes}")
+
+
+# ---------------------------------------------------------------------------
+# §15.2 New: rent due today + food tomorrow does not put rent first
+# ---------------------------------------------------------------------------
+
+class TestRentDueTodayFoodNotDisplaced(unittest.TestCase):
+    """§15.2 rule 4: rent due today (ref_date == rent_due_date) plus food running
+    out tomorrow must NOT list rent first.  Food stays at least equal."""
+
+    def test_rent_due_today_food_tomorrow_food_not_displaced(self):
+        """Rent due today + food tomorrow: food must appear before or equal to housing."""
+        needs = [
+            _need("need_food", category="food_assistance",
+                  subcategory="food_pantry", urgency="immediate"),
+            _need("need_housing", category="housing_assistance",
+                  subcategory="rental_assistance", urgency="high"),
+        ]
+        matches = [
+            _match("PROG-FOOD", ["need_food"], subcategory="food_pantry"),
+            _match("PROG-HOUSING", ["need_housing"], subcategory="rental_assistance"),
+        ]
+        avail = [_open_avail("PROG-FOOD"), _open_avail("PROG-HOUSING")]
+        case_facts = [
+            {"fact_id": "f1", "field": "rent_due_date",
+             "value": "2026-11-01",   # same as ref_date → due today, NOT overdue
+             "confirmation_status": "confirmed",
+             "source": "user_statement", "time_context": None},
+        ]
+        timing = [
+            {"program_id": "PROG-FOOD", "need_id": "need_food",
+             "official_deadline": None,
+             "user_target_date": "2026-11-02",   # food tomorrow
+             "estimated_processing_time": None},
+        ]
+        acts = _run6(
+            needs, [matches[0], matches[1]],
+            program_availability=avail,
+            timing=timing,
+            case_facts=case_facts,
+            ref_date="2026-11-01",
+        )
+        pids = [a["program_id"] for a in acts if a["program_id"]]
+        food_idx = pids.index("PROG-FOOD")
+        housing_idx = pids.index("PROG-HOUSING")
+        # food (immediate) → "first" group; housing (high) → "parallel".
+        # Rent due today must not elevate housing above food.
+        self.assertLess(food_idx, housing_idx,
+                        f"Rent due today + food tomorrow: food must not be displaced; got {pids}")
+
+
+# ---------------------------------------------------------------------------
+# §15.2 New: user_priority=1 does not change order_group (standalone)
+# ---------------------------------------------------------------------------
+
+class TestUserPriorityDoesNotChangeOrderGroup(unittest.TestCase):
+    """§15.2 rule 5 (standalone): user_priority=1 must never change order_group.
+    A 'high' urgency need with user_priority=1 stays in 'parallel'.
+    An 'immediate' urgency need is in 'first' purely because of urgency, not priority."""
+
+    def test_priority_1_high_urgency_stays_parallel(self):
+        """user_priority=1 + urgency 'high' → order_group must be 'parallel'."""
+        needs = [
+            dict(_need("need_A", category="housing_assistance",
+                       subcategory="rental_assistance", urgency="high"),
+                 user_priority=1),
+        ]
+        matches = [_match("PROG-A", ["need_A"], subcategory="rental_assistance")]
+        acts = _run6(needs, matches, ref_date="2026-11-01")
+        action = next(a for a in acts if a["program_id"] == "PROG-A")
+        self.assertEqual(action["order_group"], "parallel",
+                         f"user_priority=1 must not change 'high' urgency group to 'first'; "
+                         f"got {action['order_group']}")
+
+    def test_priority_1_immediate_urgency_is_first_due_to_urgency(self):
+        """user_priority=1 + urgency 'immediate' → 'first' because of urgency, not priority."""
+        needs = [
+            dict(_need("need_A", category="food_assistance",
+                       subcategory="food_pantry", urgency="immediate"),
+                 user_priority=1),
+            _need("need_B", category="housing_assistance",
+                  subcategory="rental_assistance", urgency="high"),
+        ]
+        matches = [
+            _match("PROG-A", ["need_A"], subcategory="food_pantry"),
+            _match("PROG-B", ["need_B"], subcategory="rental_assistance"),
+        ]
+        acts = _run6(needs, matches, ref_date="2026-11-01")
+        a_action = next(a for a in acts if a["program_id"] == "PROG-A")
+        b_action = next(a for a in acts if a["program_id"] == "PROG-B")
+        # A is first due to urgency; B is parallel due to urgency.
+        self.assertEqual(a_action["order_group"], "first",
+                         f"Immediate urgency must be 'first': {a_action['order_group']}")
+        self.assertEqual(b_action["order_group"], "parallel",
+                         f"High urgency must be 'parallel': {b_action['order_group']}")
+
+
+# ---------------------------------------------------------------------------
+# §15.2 Follow-up: three required new scenarios
+# ---------------------------------------------------------------------------
+
+class TestFollowUpNewScenarios(unittest.TestCase):
+    """Three new test scenarios required by the §15.2 follow-up:
+    1. eviction_notice_type 'Sheriff's notice to vacate, lockout Nov 11' → shelter/legal
+       first with not-guaranteed note, no EVICTION_STAGE_UNKNOWN.
+    2. eviction_notice_type '3-day pay or quit' → food first, no EVICTION_STAGE_UNKNOWN.
+    3. rent_due_date Dec 1 shows as user_target_date on housing card, does not reorder
+       ahead of food.
+    """
+
+    def test_sheriff_notice_type_shelter_legal_first_no_unknown_issue(self):
+        """§15.2 follow-up scenario 1: eviction_notice_type 'Sheriff's notice to vacate,
+        lockout Nov 11' puts shelter/legal first with not-guaranteed note.
+        No EVICTION_STAGE_UNKNOWN (type is known)."""
+        needs = [
+            _need("need_food", category="food_assistance",
+                  subcategory="food_pantry", urgency="immediate"),
+            _need("need_shelter", category="housing_assistance",
+                  subcategory="emergency_shelter", urgency="immediate"),
+            _need("need_legal", category="housing_assistance",
+                  subcategory="housing_legal_aid", urgency="immediate"),
+        ]
+        matches = [
+            _match("PROG-FOOD", ["need_food"], subcategory="food_pantry"),
+            _match("PROG-SHELTER", ["need_shelter"], subcategory="emergency_shelter"),
+            _match("PROG-LEGAL", ["need_legal"], subcategory="housing_legal_aid"),
+        ]
+        avail = [_open_avail("PROG-FOOD"), _open_avail("PROG-SHELTER"), _open_avail("PROG-LEGAL")]
+        case_facts = [
+            {"fact_id": "f1", "field": "eviction_notice_type",
+             "value": "Sheriff's notice to vacate, lockout Nov 11",
+             "confirmation_status": "confirmed",
+             "source": "user_statement", "time_context": None},
+        ]
+        result = handle(_req("agent_6", {
+            "needs": needs,
+            "matches": [matches[0], matches[1], matches[2]],  # food first in input
+            "checked_claims": [],
+            "program_availability": avail,
+            "evidence_records": [],
+            "timing": [],
+            "case_facts": case_facts,
+            "ref_date": "2026-11-01",
+        }))
+        acts = result["result"]["proposed_actions"]
+        pids = [a["program_id"] for a in acts if a["program_id"]]
+        food_idx = pids.index("PROG-FOOD")
+        shelter_idx = pids.index("PROG-SHELTER")
+        legal_idx = pids.index("PROG-LEGAL")
+        # shelter and legal must come before food (late-stage housing-first)
+        self.assertLess(shelter_idx, food_idx,
+                        f"Sheriff notice type: shelter must precede food; got {pids}")
+        self.assertLess(legal_idx, food_idx,
+                        f"Sheriff notice type: legal must precede food; got {pids}")
+        # shelter must carry a not-guaranteed note
+        shelter_action = next(a for a in acts if a["program_id"] == "PROG-SHELTER")
+        notes_text = " ".join(shelter_action.get("uncertainty_notes", []))
+        self.assertIn("not guaranteed", notes_text,
+                      f"Shelter action must say help not guaranteed; notes: {notes_text!r}")
+        # no EVICTION_STAGE_UNKNOWN — type is known
+        codes = [i["code"] for i in result["issues"]]
+        self.assertNotIn("EVICTION_STAGE_UNKNOWN", codes,
+                         f"Type is known — no EVICTION_STAGE_UNKNOWN; got {codes}")
+
+    def test_3day_pay_or_quit_food_first_no_unknown_issue(self):
+        """§15.2 follow-up scenario 2: eviction_notice_type '3-day pay or quit' +
+        food tomorrow → food stays first (early stage, not late stage).
+        No EVICTION_STAGE_UNKNOWN (type is present)."""
+        needs = [
+            _need("need_food", category="food_assistance",
+                  subcategory="food_pantry", urgency="immediate"),
+            _need("need_housing", category="housing_assistance",
+                  subcategory="rental_assistance", urgency="high"),
+        ]
+        matches = [
+            _match("PROG-FOOD", ["need_food"], subcategory="food_pantry"),
+            _match("PROG-HOUSING", ["need_housing"], subcategory="rental_assistance"),
+        ]
+        avail = [_open_avail("PROG-FOOD"), _open_avail("PROG-HOUSING")]
+        case_facts = [
+            {"fact_id": "f1", "field": "has_written_eviction_notice",
+             "value": True,
+             "confirmation_status": "confirmed",
+             "source": "user_statement", "time_context": None},
+            {"fact_id": "f2", "field": "eviction_notice_type",
+             "value": "3-day pay or quit",
+             "confirmation_status": "confirmed",
+             "source": "user_statement", "time_context": None},
+        ]
+        timing = [
+            {"program_id": "PROG-FOOD", "need_id": "need_food",
+             "official_deadline": None,
+             "user_target_date": "2026-11-02",   # food tomorrow
+             "estimated_processing_time": None},
+        ]
+        result = handle(_req("agent_6", {
+            "needs": needs,
+            "matches": [matches[0], matches[1]],
+            "checked_claims": [],
+            "program_availability": avail,
+            "evidence_records": [],
+            "timing": timing,
+            "case_facts": case_facts,
+            "ref_date": "2026-11-01",
+        }))
+        acts = result["result"]["proposed_actions"]
+        pids = [a["program_id"] for a in acts if a["program_id"]]
+        food_idx = pids.index("PROG-FOOD")
+        housing_idx = pids.index("PROG-HOUSING")
+        # food (immediate → first group) must stay before housing (high → parallel)
+        self.assertLess(food_idx, housing_idx,
+                        f"3-day pay or quit + food tomorrow: food must stay first; got {pids}")
+        # no EVICTION_STAGE_UNKNOWN — type is present
+        codes = [i["code"] for i in result["issues"]]
+        self.assertNotIn("EVICTION_STAGE_UNKNOWN", codes,
+                         f"Type is known — no EVICTION_STAGE_UNKNOWN; got {codes}")
+
+    def test_rent_due_dec1_shows_as_user_target_date_does_not_reorder(self):
+        """§15.2 follow-up scenario 3: rent_due_date Dec 1 must appear as
+        user_target_date on the housing action card but must NOT reorder the
+        housing action ahead of food (food urgency 'immediate', housing 'high')."""
+        needs = [
+            _need("need_food", category="food_assistance",
+                  subcategory="food_pantry", urgency="immediate"),
+            _need("need_housing", category="housing_assistance",
+                  subcategory="rental_assistance", urgency="high"),
+        ]
+        matches = [
+            _match("PROG-FOOD", ["need_food"], subcategory="food_pantry"),
+            _match("PROG-HOUSING", ["need_housing"], subcategory="rental_assistance"),
+        ]
+        avail = [_open_avail("PROG-FOOD"), _open_avail("PROG-HOUSING")]
+        case_facts = [
+            {"fact_id": "f1", "field": "rent_due_date",
+             "value": "2026-12-01",
+             "confirmation_status": "confirmed",
+             "source": "user_statement", "time_context": None},
+        ]
+        acts = _run6(
+            needs, [matches[0], matches[1]],
+            program_availability=avail,
+            case_facts=case_facts,
+            ref_date="2026-11-01",
+        )
+        housing_action = next(a for a in acts if a["program_id"] == "PROG-HOUSING")
+        food_action = next(a for a in acts if a["program_id"] == "PROG-FOOD")
+        # rent_due_date must appear as user_target_date on the housing card
+        self.assertEqual(housing_action["user_target_date"], "2026-12-01",
+                         f"rent_due_date must be set as user_target_date; "
+                         f"got {housing_action['user_target_date']!r}")
+        # food (immediate) must still come before housing (high) in the list
+        pids = [a["program_id"] for a in acts if a["program_id"]]
+        food_idx = pids.index("PROG-FOOD")
+        housing_idx = pids.index("PROG-HOUSING")
+        self.assertLess(food_idx, housing_idx,
+                        f"rent_due_date Dec 1 must not reorder housing before food; got {pids}")
+
+
+# ---------------------------------------------------------------------------
+# Follow-up: rent "was due" vs "is due" and emergency_shelter neutral wording
+# ---------------------------------------------------------------------------
+
+class TestRentDueWording(unittest.TestCase):
+    """rent_due_date before ref_date → 'was due'; on or after ref_date → 'is due'."""
+
+    def _housing_action(self, rent_due_date, ref_date):
+        needs = [_need("need_h", category="housing_assistance",
+                       subcategory="rental_assistance", urgency="high")]
+        matches = [_match("PROG-H", ["need_h"], subcategory="rental_assistance")]
+        case_facts = [{"fact_id": "f1", "field": "rent_due_date",
+                       "value": rent_due_date,
+                       "confirmation_status": "confirmed",
+                       "source": "user_statement", "time_context": None}]
+        acts = _run6(needs, matches, case_facts=case_facts, ref_date=ref_date)
+        return next(a for a in acts if a["program_id"] == "PROG-H")
+
+    def test_rent_overdue_says_was_due(self):
+        """rent_due_date strictly before ref_date → rationale says 'was due'."""
+        a = self._housing_action("2026-10-01", "2026-11-01")
+        self.assertIn("was due", a["rationale"],
+                      f"Overdue rent must say 'was due'; rationale: {a['rationale']!r}")
+        self.assertNotIn("is due", a["rationale"],
+                         f"Overdue rent must not say 'is due'; rationale: {a['rationale']!r}")
+
+    def test_rent_due_today_says_is_due(self):
+        """rent_due_date == ref_date (today) → rationale says 'is due'."""
+        a = self._housing_action("2026-11-01", "2026-11-01")
+        self.assertIn("is due", a["rationale"],
+                      f"Rent due today must say 'is due'; rationale: {a['rationale']!r}")
+        self.assertNotIn("was due", a["rationale"],
+                         f"Rent due today must not say 'was due'; rationale: {a['rationale']!r}")
+
+    def test_rent_due_future_says_is_due(self):
+        """rent_due_date after ref_date (future) → rationale says 'is due'."""
+        a = self._housing_action("2026-12-01", "2026-11-01")
+        self.assertIn("is due", a["rationale"],
+                      f"Future rent date must say 'is due'; rationale: {a['rationale']!r}")
+        self.assertNotIn("was due", a["rationale"],
+                         f"Future rent date must not say 'was due'; rationale: {a['rationale']!r}")
+
+
+class TestEmergencyShelterWording(unittest.TestCase):
+    """emergency_shelter rationale 'comes first' only on confirmed late legal stage.
+    Neutral wording when stage is unknown or no housing signal."""
+
+    def _shelter_rationale(self, case_facts, ref_date="2026-11-01"):
+        needs = [_need("need_s", category="housing_assistance",
+                       subcategory="emergency_shelter", urgency="immediate")]
+        matches = [_match("PROG-S", ["need_s"], subcategory="emergency_shelter")]
+        acts = _run6(needs, matches, case_facts=case_facts, ref_date=ref_date)
+        return next(a for a in acts if a["program_id"] == "PROG-S")["rationale"]
+
+    def test_undated_notice_shelter_uses_neutral_wording(self):
+        """has_written_eviction_notice=True (no eviction_notice_type) + shelter match
+        must NOT say 'comes first'; neutral wording required."""
+        case_facts = [{"fact_id": "f1", "field": "has_written_eviction_notice",
+                       "value": True, "confirmation_status": "confirmed",
+                       "source": "user_statement", "time_context": None}]
+        rationale = self._shelter_rationale(case_facts)
+        self.assertNotIn("comes first", rationale,
+                         f"Undated notice: shelter must not say 'comes first'; got {rationale!r}")
+        self.assertIn("not guaranteed", rationale,
+                      f"Neutral shelter wording must mention 'not guaranteed'; got {rationale!r}")
+
+    def test_no_housing_signal_shelter_uses_neutral_wording(self):
+        """No housing signal at all → neutral wording on emergency_shelter action."""
+        rationale = self._shelter_rationale([])
+        self.assertNotIn("comes first", rationale,
+                         f"No signal: shelter must not say 'comes first'; got {rationale!r}")
+
+    def test_confirmed_late_stage_shelter_says_comes_first(self):
+        """Confirmed late legal stage (sheriff notice type) → shelter rationale
+        says 'comes first' and carries not-guaranteed note."""
+        case_facts = [{"fact_id": "f1", "field": "eviction_notice_type",
+                       "value": "Sheriff's notice to vacate",
+                       "confirmation_status": "confirmed",
+                       "source": "user_statement", "time_context": None}]
+        rationale = self._shelter_rationale(case_facts)
+        self.assertIn("comes first", rationale,
+                      f"Sheriff notice: shelter must say 'comes first'; got {rationale!r}")
+
+
+# ---------------------------------------------------------------------------
+# TD 20.5 H3: date in eviction_notice_type → user_target_date on housing actions
+# ---------------------------------------------------------------------------
+
+class TestNoticeTypeDateAsUserTargetDate(unittest.TestCase):
+    """TD 20.5 H3: when eviction_notice_type contains a date (e.g. 'sheriff lockout Nov 11'),
+    that date becomes user_target_date on housing actions (user-stated, never official_deadline),
+    and is mentioned once in the rationale as 'The date you gave is …'.
+    The date must NOT reorder housing before food."""
+
+    def _run_with_notice_type(self, notice_type_value, ref_date="2026-11-01"):
+        needs = [
+            _need("need_food", category="food_assistance",
+                  subcategory="food_pantry", urgency="immediate"),
+            _need("need_shelter", category="housing_assistance",
+                  subcategory="emergency_shelter", urgency="immediate"),
+        ]
+        matches = [
+            _match("PROG-FOOD", ["need_food"], subcategory="food_pantry"),
+            _match("PROG-SHELTER", ["need_shelter"], subcategory="emergency_shelter"),
+        ]
+        avail = [_open_avail("PROG-FOOD"), _open_avail("PROG-SHELTER")]
+        case_facts = [{"fact_id": "f1", "field": "eviction_notice_type",
+                       "value": notice_type_value,
+                       "confirmation_status": "confirmed",
+                       "source": "user_statement", "time_context": None}]
+        acts = _run6(needs, [matches[0], matches[1]],
+                     program_availability=avail, case_facts=case_facts, ref_date=ref_date)
+        return acts
+
+    def test_writ_with_nov11_sets_user_target_date(self):
+        """'Writ of possession, sheriff lockout Nov 11' → shelter action has
+        user_target_date 2026-11-11 and rationale mentions 'The date you gave'."""
+        acts = self._run_with_notice_type("Writ of possession, sheriff lockout Nov 11")
+        shelter = next(a for a in acts if a["program_id"] == "PROG-SHELTER")
+        self.assertEqual(shelter["user_target_date"], "2026-11-11",
+                         f"Parsed date must be 2026-11-11; got {shelter['user_target_date']!r}")
+        self.assertIn("date you gave", shelter["rationale"],
+                      f"Rationale must mention 'The date you gave'; got {shelter['rationale']!r}")
+
+    def test_notice_date_is_never_official_deadline(self):
+        """The date from eviction_notice_type must not appear as official_deadline."""
+        acts = self._run_with_notice_type("Writ of possession, sheriff lockout Nov 11")
+        shelter = next(a for a in acts if a["program_id"] == "PROG-SHELTER")
+        self.assertIsNone(shelter["official_deadline"],
+                          f"Notice date must never be official_deadline; "
+                          f"got {shelter['official_deadline']!r}")
+
+    def test_notice_date_does_not_reorder_housing_before_food(self):
+        """Even with a parsed notice date, housing must not be reordered before food
+        by the cross-need sort key (date is excluded from sort key, §15.2 rule 4 analogy)."""
+        # Both are "immediate" so both are in "first" group.  Within the group,
+        # housing_first=True (writ keyword) means housing subs sort before food.
+        # That is intentional — housing_first is active.  What must NOT happen is
+        # the parsed notice date moving housing ahead when housing_first is False.
+        # Use a non-late-stage notice with a date to verify the date doesn't reorder.
+        needs = [
+            _need("need_food", category="food_assistance",
+                  subcategory="food_pantry", urgency="immediate"),
+            _need("need_housing", category="housing_assistance",
+                  subcategory="rental_assistance", urgency="high"),
+        ]
+        matches = [
+            _match("PROG-FOOD", ["need_food"], subcategory="food_pantry"),
+            _match("PROG-HOUSING", ["need_housing"], subcategory="rental_assistance"),
+        ]
+        avail = [_open_avail("PROG-FOOD"), _open_avail("PROG-HOUSING")]
+        # "30-day notice Nov 25" — early stage, date present, housing urgency=high
+        case_facts = [{"fact_id": "f1", "field": "eviction_notice_type",
+                       "value": "30-day notice Nov 25",
+                       "confirmation_status": "confirmed",
+                       "source": "user_statement", "time_context": None}]
+        acts = _run6(needs, [matches[0], matches[1]],
+                     program_availability=avail, case_facts=case_facts, ref_date="2026-11-01")
+        pids = [a["program_id"] for a in acts if a["program_id"]]
+        food_idx = pids.index("PROG-FOOD")
+        housing_idx = pids.index("PROG-HOUSING")
+        # food (immediate → first) must still come before housing (high → parallel)
+        self.assertLess(food_idx, housing_idx,
+                        f"Notice date must not reorder housing before food; got {pids}")
+        # date must still appear as user_target_date on the housing card
+        housing_action = next(a for a in acts if a["program_id"] == "PROG-HOUSING")
+        self.assertEqual(housing_action["user_target_date"], "2026-11-25",
+                         f"Parsed notice date must be user_target_date; "
+                         f"got {housing_action['user_target_date']!r}")
 
 
 if __name__ == "__main__":

@@ -331,8 +331,8 @@ TEMPLATES = {
     "calfresh_benefits":     ("Check food benefits", "provides ongoing help buying food", "Contact the provider or apply through the official site. They decide eligibility based on your household.", "Benefits take time to process, so starting now helps."),
     "unemployment_insurance":("Apply for unemployment benefits", "can replace part of lost wages after a layoff", "Start the online application. Have your last employer's details and last day worked ready.", "Income replacement supports your other needs, and payments take time to start, so file early."),
     "rental_assistance":     ("Ask about rent help", "offers help with rent in Sacramento", "Contact the provider to confirm requirements and whether assistance is currently available.", "Contacting this program early gives the most time to arrange help."),
-    "eviction_prevention":   ("Ask about help to stay in your home", "helps tenants at risk of losing their housing", "Contact the provider to ask what help is available and what documents to bring, such as any notice from your landlord.", "Acting before a housing deadline gives you the most options."),
-    "emergency_shelter":     ("Ask about emergency housing", "connects people to emergency shelter and housing help", "Contact the provider to ask about current openings and how to get connected.", "A safe place to stay comes first if your housing is at risk."),
+    "eviction_prevention":   ("Ask about help to stay in your home", "helps tenants at risk of losing their housing", "Contact the provider to ask what help is available and what documents to bring, such as any notice from your landlord.", "Getting this contact early gives you the most options."),
+    "emergency_shelter":     ("Ask about emergency housing", "connects people to emergency shelter and housing help", "Contact the provider to ask about current openings and how to get connected.", "Ask about current openings; availability changes and is not guaranteed."),
     "motel_voucher":         ("Ask about a short-term motel stay", "may offer short-term motel stays in some situations", "Contact the provider to ask whether motel help is available and who can get it.", "Short-term housing can bridge the gap while other help starts."),
     "housing_legal_aid":     ("Get free legal advice about your housing", "offers legal help with housing problems", "Contact the provider to ask for advice about your housing situation.", "Legal advice early can protect your options."),
     "cash_aid":              ("Ask about cash aid", "may provide cash help for families with children", "Contact the county or apply through the official site. They decide eligibility based on your household.", "Cash help can cover basics while other income is restored."),
@@ -376,83 +376,173 @@ def _uncertainty(match, p):
 _FAR_DATE = "9999-99-99"  # sentinel for missing dates in sort keys
 
 # Housing subcategories that must sort before food/income actions when the case
-# shows an overdue-housing signal (C-OD2).
+# shows a confirmed late legal stage (§15.2 rule 3).
 _HOUSING_SUBS = {"rental_assistance", "eviction_prevention", "emergency_shelter",
                  "motel_voucher", "housing_legal_aid"}
 
+# Subcategories appropriate for a confirmed late-stage housing emergency
+# (§15.2 rule 3): emergency shelter + legal help first, NOT rental assistance.
+_LATE_STAGE_HOUSING_SUBS = {"emergency_shelter", "motel_voucher", "housing_legal_aid"}
 
-def _immediate_housing_threat(facts, ref_date_str):
-    """Return True ONLY when the case shows an immediate eviction threat: a sheriff
-    notice / writ, or when the user's eviction/rent-consequence date is the soonest
-    dated consequence in the case.  Design §15.2 / PR #13 fix 5.
+# Keywords in eviction_notice_type free text that indicate a confirmed late legal stage.
+# Agent 2 collects this as free text from: "What type of eviction notice did you receive,
+# and what date is on it?"
+# Note: "notice to vacate" is intentionally omitted — a "30-day notice to vacate" is an
+# early-stage notice.  "Sheriff's notice to vacate" is covered by "sheriff".
+_LATE_STAGE_KEYWORDS = (
+    "sheriff", "writ", "lockout",
+    "judgment", "unlawful detainer",
+)
 
-    Rules (in priority order):
-    1. Sheriff enforcement or a writ of execution → True (overrides everything).
-    2. An eviction notice exists AND its date (user-stated) is before ref_date + 7 days
-       (i.e. the court/landlord action is imminent).
-    3. rent_due_date is strictly in the past (before ref_date, not on the same day).
-       "Rent due today" is NOT overdue.
-    4. A utility shutoff notice alone is NOT enough to force housing first.
+# Keywords in a housing need's description / urgency_reason that signal the user
+# is displaced right now with nowhere safe to stay tonight.
+_DISPLACED_NOW_KEYWORDS = (
+    "nowhere to stay", "nowhere safe to stay", "locked out", "no place to stay",
+    "sleeping outside", "on the street",
+)
+
+
+# Month-name patterns used by _parse_date_from_text.
+_MONTH_NAMES = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+# Matches "Nov 11", "November 11", "Nov. 11", "11/11", "2026-11-11".
+_DATE_IN_TEXT_RE = re.compile(
+    r"""
+    (?:
+        (?P<mon>[A-Za-z]{3,9})\.?\s+(?P<day>\d{1,2})   # "Nov 11" / "November 11"
+    |   (?P<m2>\d{1,2})/(?P<d2>\d{1,2})                # "11/11"
+    |   (?P<iso>\d{4}-\d{2}-\d{2})                     # "2026-11-11"
+    )
+    """,
+    re.VERBOSE,
+)
+
+
+def _parse_date_from_text(text, ref_date_str):
+    """Extract the first date-like token from *text* and return an ISO date string,
+    or None if no date is found.  Uses the year from ref_date_str; if the parsed
+    date falls before ref_date, the year is advanced by 1 (TD 20.5 H3).
     """
+    if not text or not ref_date_str:
+        return None
     try:
-        today = datetime.strptime(ref_date_str, "%Y-%m-%d").date()
+        ref = datetime.strptime(ref_date_str, "%Y-%m-%d").date()
     except (ValueError, TypeError):
-        return False  # no ref_date → cannot make overdue decision
-
-    # Rule 1: sheriff or writ
-    for field in ("sheriff_notice", "writ_of_execution", "sheriff_enforcement"):
-        val = (facts.get(field) or {}).get("value")
-        if val and str(val).lower() not in ("false", "no", "0", "none", ""):
-            return True
-
-    # Rule 2: eviction notice with an imminent date
-    notice_exists = False
-    for notice_field in ("has_written_eviction_notice", "landlord_notice_exists"):
-        val = (facts.get(notice_field) or {}).get("value")
-        if val and str(val).lower() not in ("false", "no", "0", "none", ""):
-            notice_exists = True
-            break
-    if notice_exists:
-        eviction_date = (facts.get("eviction_date") or {}).get("value")
-        if eviction_date:
-            try:
-                from datetime import timedelta
-                ed = datetime.strptime(str(eviction_date), "%Y-%m-%d").date()
-                if ed <= today + timedelta(days=7):
-                    return True
-                # eviction notice has a date but it is not imminent → fall through
-            except (ValueError, TypeError):
-                pass
+        return None
+    m = _DATE_IN_TEXT_RE.search(str(text))
+    if not m:
+        return None
+    try:
+        if m.group("iso"):
+            from datetime import date as _date
+            return str(datetime.strptime(m.group("iso"), "%Y-%m-%d").date())
+        if m.group("mon"):
+            mon_str = m.group("mon")[:3].lower()
+            mon_num = _MONTH_NAMES.get(mon_str)
+            if not mon_num:
+                return None
+            day = int(m.group("day"))
+            year = ref.year
         else:
-            # eviction notice with no date: treat as imminent
-            return True
+            mon_num = int(m.group("m2"))
+            day = int(m.group("d2"))
+            year = ref.year
+        from datetime import date as _date
+        parsed = _date(year, mon_num, day)
+        if parsed < ref:            # date already passed → assume next year
+            parsed = _date(year + 1, mon_num, day)
+        return parsed.isoformat()
+    except (ValueError, TypeError, KeyError):
+        return None
 
-    # Rule 3: rent_due_date is strictly in the past (today < rent_due_date means NOT overdue)
-    rent_due = (facts.get("rent_due_date") or {}).get("value")
-    if rent_due:
-        try:
-            rd = datetime.strptime(str(rent_due), "%Y-%m-%d").date()
-            if rd < today:   # strictly past; today == rd is NOT overdue
-                return True
-        except (ValueError, TypeError):
-            pass
 
-    # Rule 4: utility shutoff notice alone → False (does not reorder housing)
+def _eviction_notice_type_is_late_stage(notice_type_value):
+    """Return True when the eviction_notice_type free-text contains a late-stage keyword."""
+    if not notice_type_value:
+        return False
+    t = str(notice_type_value).lower()
+    return any(kw in t for kw in _LATE_STAGE_KEYWORDS)
+
+
+def _confirmed_late_legal_stage(facts, needs_dict=None):
+    """Return True when the case shows a confirmed late legal stage, using ONLY:
+    - eviction_notice_type free text (sheriff, writ, lockout, judgment, etc.)
+    - a housing need's description / urgency_reason mentioning displacement tonight.
+    Does NOT rely on invented fact field names (§15.2 follow-up).
+    """
+    notice_type = (facts.get("eviction_notice_type") or {}).get("value")
+    if _eviction_notice_type_is_late_stage(notice_type):
+        return True
+    # "displaced now" signal from the housing need itself (not a separate fact field).
+    if needs_dict:
+        for need in needs_dict.values():
+            if need.get("category") != "housing_assistance":
+                continue
+            for text_field in ("description", "urgency_reason", "original_quote"):
+                txt = str(need.get(text_field) or "").lower()
+                if any(kw in txt for kw in _DISPLACED_NOW_KEYWORDS):
+                    return True
     return False
 
 
-def _sort_key_6(action, housing_first, action_sub=None):
+def _eviction_notice_unknown_stage(facts):
+    """Return True when has_written_eviction_notice is True but eviction_notice_type
+    is absent or empty.  §15.2 rule 2: raise EVICTION_STAGE_UNKNOWN only in this case.
+    If eviction_notice_type is present (any value), the stage is at least partially
+    known — do not raise the issue.
+    """
+    notice_exists_val = (facts.get("has_written_eviction_notice") or {}).get("value")
+    notice_exists = bool(notice_exists_val) and str(notice_exists_val).lower() not in (
+        "false", "no", "0", "none", "")
+    if not notice_exists:
+        return False
+    notice_type = (facts.get("eviction_notice_type") or {}).get("value")
+    # If eviction_notice_type is present (non-empty), the type is known → no issue.
+    return not (notice_type and str(notice_type).strip())
+
+
+def _immediate_housing_threat(facts, ref_date_str, needs_dict=None):
+    """Return True ONLY when the case shows a confirmed late legal stage (§15.2 rule 3).
+
+    Detection uses only real fact fields:
+    - eviction_notice_type free text (sheriff, writ, lockout, judgment, etc.)
+    - housing need description/urgency_reason mentioning displacement tonight.
+
+    Rules (§15.2):
+    1. Confirmed late legal stage via eviction_notice_type text → True.
+    2. Eviction notice with no eviction_notice_type → False (EVICTION_STAGE_UNKNOWN issued).
+    3. Overdue rent and rent due today → False. Rent never places housing above food.
+    4. Utility shutoff notice alone → False.
+    """
+    try:
+        datetime.strptime(ref_date_str, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return False  # no ref_date → cannot make overdue decision
+
+    return _confirmed_late_legal_stage(facts, needs_dict)
+
+
+def _sort_key_6(action, housing_first, action_sub=None, action_rent_date=None):
     """Sort key for Agent 6 actions (A6-03 + C-OD2).
 
     Primary: order_group (first < parallel < later).
     Within group: housing sub before non-housing ONLY when housing_first is True.
-    Then: earliest official_deadline, user_target_date, processing_time presence.
+    Then: earliest official_deadline, user_target_date (cross-need), processing_time.
     action_sub is the {action_id -> subcategory} lookup (internal; not in action dict).
+    action_rent_date is the set of action_ids whose user_target_date came solely from
+    rent_due_date (§15.2 rule 4): those dates must not drive cross-need ordering.
     """
     g = GROUP_ORDER[action["order_group"]]
     dl = action.get("official_deadline") or _FAR_DATE
-    ud = action.get("user_target_date") or _FAR_DATE
-    sub = (action_sub or {}).get(action.get("action_id"), "")
+    aid = action.get("action_id")
+    # Exclude rent_due_date from the cross-need sort key (§15.2 item 3 follow-up).
+    if action_rent_date and aid in action_rent_date:
+        ud = _FAR_DATE
+    else:
+        ud = action.get("user_target_date") or _FAR_DATE
+    sub = (action_sub or {}).get(aid, "")
     is_non_housing = (0 if sub in _HOUSING_SUBS else 1) if housing_first else 0
     has_pt = 0 if action.get("estimated_processing_time") else 1
     return (g, is_non_housing, dl, ud, has_pt)
@@ -492,6 +582,18 @@ def agent_6(request):
     if not ref_date_ok:
         issues_out.append(_issue("MISSING_REF_DATE", "warning",
                                  "ref_date is missing or not an ISO date; overdue/time-left decisions are skipped."))
+    # §15.2 rule 2 (follow-up): raise EVICTION_STAGE_UNKNOWN only when
+    # has_written_eviction_notice is True AND eviction_notice_type is absent.
+    # If eviction_notice_type is present (any value), the type is known — no issue.
+    if _eviction_notice_unknown_stage(facts):
+        issues_out.append(_issue(
+            "EVICTION_STAGE_UNKNOWN", "warning",
+            "An eviction notice exists but the notice type is not recorded. "
+            "Please clarify: notice type (pay-or-quit, 3-day, 30-day, etc.), "
+            "date on the notice, whether a court case has been filed, "
+            "and whether a court judgment or sheriff notice has been received. "
+            "Housing is ordered as a normal need until the stage is confirmed.",
+        ))
     actions = []
 
     def add(**kw):
@@ -510,7 +612,8 @@ def agent_6(request):
         return a
 
     # Keep _subcategory only in a parallel lookup so _sort_key_6 can still use it.
-    _action_sub = {}  # action_id -> subcategory (internal only)
+    _action_sub = {}   # action_id -> subcategory (internal only)
+    _action_rent_date = set()  # action_ids whose user_target_date came from rent_due_date only
 
     for m in p["matches"]:
         if m["match_status"] == "confirmed_mismatch":
@@ -526,17 +629,31 @@ def agent_6(request):
             # PR #13 fix 7: urgency wording only when urgency is "immediate".
             base_why = TEMPLATES.get(sub, DEFAULT)[3]
             group = {"immediate": "first", "high": "parallel", "unknown": "parallel"}.get(need["urgency"], "later")
-            # PR #13 fix 6: respect user_priority — a need ranked 1 must not be in a later group
-            # than any other need of the same or lower urgency.  Promote to "first" when priority==1.
-            user_pri = need.get("user_priority")
-            if user_pri == 1 and group not in ("first",):
-                group = "first"
+            # §15.2 rule 5: user_priority must NOT change order_group or urgency.
+            # user_preference is kept separate from action ordering.
             user_date = timing.get("user_target_date")
-            if not user_date and need["category"] == "housing_assistance" and "rent_due_date" in facts:
-                user_date = facts["rent_due_date"]["value"]  # the user's own date, never an official deadline
+            # §15.2 follow-up item 3: restore rent_due_date as user_target_date on the housing
+            # action so it appears on the card as the user's own date.  Mark the action in
+            # _action_rent_date so the sort key ignores it for cross-need ordering.
+            _from_rent_date = False
+            _from_notice_date = False
+            if (not user_date and need["category"] == "housing_assistance"
+                    and "rent_due_date" in facts):
+                user_date = facts["rent_due_date"]["value"]
+                _from_rent_date = True
+            # TD 20.5 H3: if eviction_notice_type contains a date (e.g. "sheriff lockout Nov 11"),
+            # use it as user_target_date on housing actions (user-stated date, never official_deadline).
+            # Only applied when no other date source is present.
+            if (not user_date and need["category"] == "housing_assistance" and ref_date_ok):
+                _notice_type_val = (facts.get("eviction_notice_type") or {}).get("value")
+                _parsed_notice_date = _parse_date_from_text(_notice_type_val, ref_date_str)
+                if _parsed_notice_date:
+                    user_date = _parsed_notice_date
+                    _from_notice_date = True
             # A6-04: only append date wording when a real date exists.
             # PR #13 fix 9: do not repeat the date — include it once (in the deadline sentence below).
             # PR #13 fix 7: prefix urgency phrase for food/pantry/calfresh only when immediate.
+            # §15.2 follow-up item 4: no "Acting before a housing deadline" when no housing date.
             if need.get("urgency") == "immediate" and sub in ("food_pantry", "calfresh_benefits"):
                 urgency_prefix = "Food is running low. "
             else:
@@ -601,11 +718,27 @@ def agent_6(request):
                     pass
             # A6-03: include deadline in rationale when it drives ordering.
             # PR #13 fix 9: include user_date in rationale only if not already mentioned above.
+            # §15.2 follow-up item 4: use neutral wording; only add the date phrase when the
+            # date came from timing (a real user deadline), not from rent_due_date.
             if dl and dl["status"] == "verified":
                 why += f" The official deadline is {_fmt_date(dl['value'])}."
-            elif user_date and not dl:
-                # Only add once — the base_why does not mention the date.
+            elif user_date and not dl and not _from_rent_date and not _from_notice_date:
+                # Date is from timing — include it once in the rationale.
                 why += f" Acting before your date of {_fmt_date(user_date)} gives the most time."
+            elif user_date and not dl and _from_rent_date:
+                # rent_due_date shown as user's date on the card, but not as a deadline phrase.
+                # Use "was due" when the date is strictly before ref_date (overdue).
+                try:
+                    _rent_overdue = (ref_date_ok and user_date < ref_date_str)
+                except TypeError:
+                    _rent_overdue = False
+                if _rent_overdue:
+                    why += f" Your rent was due {_fmt_date(user_date)}."
+                else:
+                    why += f" Your rent is due {_fmt_date(user_date)}."
+            elif user_date and not dl and _from_notice_date:
+                # TD 20.5 H3: date parsed from eviction_notice_type — mention once as user-stated date.
+                why += f" The date you gave is {_fmt_date(user_date)}."
             a = add(need_id=need_id, program_id=m["program_id"],
                     order_group=group, rationale=why,
                     dependency_ids=dependency,
@@ -613,6 +746,8 @@ def agent_6(request):
                     user_target_date=user_date, estimated_processing_time=proc_time,
                     evidence_refs=refs, uncertainty_notes=notes)
             _action_sub[a["action_id"]] = sub
+            if _from_rent_date or _from_notice_date:
+                _action_rent_date.add(a["action_id"])
             # PR #13 fix 8: remove the generic "Follow up" action (program_id None).
             # No longer track app_ids; we do NOT add a follow-up action.
     # PR #13 fix 8: the generic "Follow up on your applications" action is removed.
@@ -623,10 +758,30 @@ def agent_6(request):
         if a["need_id"] in closed_needs and a["program_id"] and avail.get(a["program_id"]) != "temporarily_closed" and not a["dependency_ids"]:
             a["order_group"] = "first"
             a["rationale"] += " This is the open option for this need while another program is closed."
-    # A6-03 + C-OD2: sort by group, then conditionally housing-first, then deadlines.
-    # PR #13 fix 4/5: use ref_date; only _immediate_housing_threat triggers housing-first.
-    housing_first = _immediate_housing_threat(facts, ref_date_str) if ref_date_ok else False
-    actions.sort(key=lambda a: _sort_key_6(a, housing_first, _action_sub))
+    # §15.2 rule 3: housing goes first only on a confirmed late legal stage.
+    housing_first = _immediate_housing_threat(facts, ref_date_str, needs) if ref_date_ok else False
+    # §15.2 rule 3 (continued): when housing_first is True:
+    # - replace neutral emergency_shelter rationale with the "comes first" wording.
+    # - append a not-guaranteed note to every late-stage housing sub.
+    # When housing_first is False the neutral wording stays (shelter match on undated notice etc.).
+    _SHELTER_NEUTRAL = "Ask about current openings; availability changes and is not guaranteed."
+    _SHELTER_URGENT  = "A safe place to stay comes first if your housing is at risk."
+    for a in actions:
+        sub_a = _action_sub.get(a.get("action_id"), "")
+        if sub_a == "emergency_shelter":
+            if housing_first:
+                a["rationale"] = a["rationale"].replace(_SHELTER_NEUTRAL, _SHELTER_URGENT)
+                if "not guaranteed" not in " ".join(a.get("uncertainty_notes") or []):
+                    a["uncertainty_notes"] = list(a.get("uncertainty_notes") or []) + [
+                        "Help from this program is not guaranteed. Contact them directly to confirm current availability."
+                    ]
+            # else: neutral wording stays as-is
+        elif sub_a in _LATE_STAGE_HOUSING_SUBS and housing_first:
+            if "not guaranteed" not in " ".join(a.get("uncertainty_notes") or []):
+                a["uncertainty_notes"] = list(a.get("uncertainty_notes") or []) + [
+                    "Help from this program is not guaranteed. Contact them directly to confirm current availability."
+                ]
+    actions.sort(key=lambda a: _sort_key_6(a, housing_first, _action_sub, _action_rent_date))
     group_counters = {}
     for a in actions:
         g = a["order_group"]
