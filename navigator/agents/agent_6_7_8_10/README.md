@@ -1,4 +1,4 @@
-# Agents 6, 7, 8, 10: Action Plan and Validation (mock component v0.9)
+# Agents 6, 7, 8, 10: Action Plan and Validation (mock component v0.10)
 Owner: Hisham | Contracts: SHARED_CONTRACTS_v1.1 + Slav's Agent 7/10 notes | Status: local mock, not yet IBM integrated
 
 ## What it does
@@ -41,15 +41,32 @@ Each appended item is followed by `"(checked Mon D)."` using the portable date h
 
 | Item | Fix |
 | --- | --- |
-| **A6-01** Multiple needs | Actions now carry `need_ids[]` listing every need the match covers; coverage is computed across all entries, so input-order reversal cannot leave a need in `coverage_gaps`. |
-| **A6-02** Conflicting deadlines | `_deadline_info` now also flags two verified claims with different values, and any verified claim with `claim_value=None`; the confirm action always shows plain text — never `()` or `None`. |
-| **A6-03** Time-based ordering | Within a group, actions sort by `official_deadline`, then `user_target_date`, then processing-time presence; a plain-text note is added when processing time may exceed the time remaining. |
-| **A6-04** Unsupported urgency | The `rental_assistance` template rationale was reworded to neutral text; date-specific phrases are only appended when a real date is present in the input. |
-| **A7-01** Empty matches | Q8 now fires for every uncovered need whenever the stage_result has a `"matches"` key (even when the list is empty). |
-| **A7-02** Evidence ref validation | An empty `evidence_records` list is no longer treated as "not provided"; any `evidence_refs` entry that is absent from the list triggers Q1. |
-| **A7-03** None-value conflict severity | A `conflicting` claim with `claim_value=None` now routes to Q2 (not Q3); severity follows the existing field-path table (`critical` for deadline/contact/availability, `warning` otherwise). |
-| **A10-02** False coverage | Agent 10 now checks that every entry in a card's `related_need_ids` is actually in `matches[pid]["need_ids"]`; mismatches are flagged V12. |
-| **C-OD2** Overdue rent ordering | Housing subcategories sort before food/income within the same `order_group` via a `_HOUSING_SUBS` constant in the sort key. |
+| **A6-01** Multiple needs | Actions carry `need_id` (singular per contract 4.6); Agent 8 merges actions for the same program into one card. |
+| **A6-02** Conflicting deadlines | `_deadline_info` flags two verified claims with different values, and any verified claim with `claim_value=None`; confirm action always shows plain text. |
+| **A6-03** Time-based ordering | Within a group, actions sort by `official_deadline`, then `user_target_date`, then processing-time presence. |
+| **A6-04** Unsupported urgency | Template rationale is neutral text; date-specific phrases are only appended when a real date is present. |
+| **A7-01** Empty matches | Q8 fires for every uncovered need whenever the stage_result has a `"matches"` key. |
+| **A7-02** Evidence ref validation | An empty `evidence_records` list is not treated as "not provided"; absent refs trigger Q1. |
+| **A7-03** None-value conflict severity | A `conflicting` claim with `claim_value=None` routes to Q2 (not Q3). |
+| **A10-02** False coverage | Agent 10 checks `related_need_ids` against `matches[pid]["need_ids"]`; mismatches flagged V12. |
+| **C-OD2** Overdue rent ordering | Housing subcategories sort before food/income via `_HOUSING_SUBS` when `_immediate_housing_threat` triggers. |
+
+## PR #13 audit fixes (v0.10)
+
+| Item | Root cause | Fix |
+| --- | --- | --- |
+| **1** No double periods | `_strip_trailing_period` stripped the period after `p.m.` treating it as a sentence end, producing `p.m (checked …)` instead of `p.m. (checked …)`. | `_ABBREV_END_RE` now detects `x.y.` endings; only true sentence-ending periods are stripped. |
+| **2** Phone dedup | `_next_step_contacts` could show the same phone twice if "How to apply" and "Contact" both carried it. | Compare first `_phone_re` match in each; skip Contact when the primary phone matches. |
+| **3** `_subcategory` in output | `add()` in Agent 6 passed `_subcategory=sub` as a keyword, which persisted in the action dict. | `add()` deletes all keys starting with `_` before appending; a parallel `_action_sub` dict carries the subcategory internally. |
+| **4** `ref_date` instead of `datetime.now()` | Agent 6 used `datetime.now()` for overdue and processing-time comparisons. | Agent 6 reads `payload["ref_date"]` (ISO date); missing or invalid `ref_date` adds a `MISSING_REF_DATE` issue and skips all date comparisons. |
+| **5** Ordering — eviction notice alone | `_overdue_housing_signal` returned `True` for any eviction notice or utility shutoff, forcing housing first even when a far-future date was supplied. | Replaced with `_immediate_housing_threat`: only a sheriff/writ, an eviction notice with no date (imminent), or an eviction date within 7 days triggers housing-first. Utility shutoff alone never triggers. |
+| **6** `user_priority` respected | Agent 6 ignored `need.user_priority`. | When `user_priority == 1`, the action is promoted to group `"first"` regardless of urgency-based group. |
+| **7** Urgency wording | Templates hard-coded "Food is running low" regardless of actual urgency. | Templates use neutral wording; "Food is running low. " prefix is added only when `urgency == "immediate"` for food-category needs. |
+| **8** Generic "Follow up" action removed | Agent 6 always added a `program_id=None` follow-up action; Agent 8 rendered it as a card. | The follow-up action is no longer created; Agent 8 skips any group with `m=None`. |
+| **9** Duplicate date in rationale | `user_date` was appended to the template rationale and also in the deadline sentence. | Template base wording is kept neutral; `user_date` is appended exactly once in the deadline sentence. |
+| **10** Processing time unit | All processing times were multiplied by 7 (assuming weeks), so "30 days" became 210 days. | `_parse_processing_days()` parses the unit: `days` → ×1, `weeks` → ×7, `months` → ×30. |
+| **11** Agent 8 deps + uncertainty; Agent 10 dep check | Agent 8 only copied `a["uncertainty_notes"]` from the first merged action, and `dependency_card_ids` referenced action IDs not card IDs; Agent 10 did not check dep validity. | Agent 8 merges `uncertainty_notes` across all actions in the group and filters `dependency_ids` to those present in `id_map`. Agent 10 flags `V12` for any `dependency_card_ids` entry that is not a real card. |
+| **12** A6-05 "Use an open option first" | Phrase appeared even when no open alternative existed for that need. | Added `has_open_for_need` check; phrase only included when another non-closed, non-mismatch match exists for the same need. |
 
 ## Files
 | File | Purpose |
@@ -66,8 +83,8 @@ Each appended item is followed by `"(checked Mon D)."` using the portable date h
 ## How to run (from the repository root)
 1. `python3 tests/agent_6_7_8_10/run_tests.py`
 2. Expected last line: `69 of 69 checks passed`
-3. `python3 -m unittest discover -s tests -t .`
-4. Expected: 105 tests, 1 pre-existing `test_builders` failure (KB availability field, waiting on update)
+3. `python3 -I -m unittest discover -s tests -t .`
+4. Expected: 138 tests, 1 pre-existing `test_builders` failure (KB availability field, waiting on update)
 
 Tested on macOS, Python 3.14.3.  Standard Python 3 only — no extra packages.
 

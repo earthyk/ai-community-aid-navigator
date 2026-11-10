@@ -257,15 +257,35 @@ def _first_sentence(text, max_chars=120):
     return cut + "…"
 
 
+# Abbreviation pattern: letter(s) . letter(s) . — e.g. "a.m." or "p.m."
+_ABBREV_END_RE = re.compile(r"\b[a-z]\.[a-z]\.$", re.I)
+
+
+def _strip_trailing_period(sentence):
+    """Strip a trailing '.' ONLY when it is a true sentence-ending period.
+
+    Abbreviations like 'a.m.' or 'p.m.' end with '.' but must NOT be stripped
+    because they are not sentence-ending punctuation.
+    """
+    if not sentence.endswith("."):
+        return sentence
+    if _ABBREV_END_RE.search(sentence):
+        return sentence  # abbreviation — keep the period
+    return sentence[:-1]
+
+
 def _next_step_contacts(contacts):
     """
     Return at most 2 contact snippets for next_step (v0.7+):
     1. First "How to apply" item that has a URL → "Apply online: <url> (checked Mon D)."
        If no URL item, the first "How to apply" item with a phone or 2-1-1 pattern.
-    2. First "Contact" item with a phone pattern.
+    2. First "Contact" item with a phone pattern, UNLESS its phone number is already
+       present in the "How to apply" snippet (item 1) — dedup so the same number is
+       never shown twice (PR #13 fix 2).
     Each non-URL item uses only the first sentence (≤ 120 chars) of the value.
-    Double periods are avoided: if the sentence already ends with ".", it is stripped
-    before appending " (checked Mon D).".
+    Double periods are avoided: if the sentence already ends with a true sentence
+    period (not an abbreviation like a.m. / p.m.), it is stripped before appending
+    " (checked Mon D)." (PR #13 fix 1).
     """
     _phone_re = re.compile(r"\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}|\b2-1-1\b|\b211\b", re.I)
     # 1st snippet: URL "How to apply" first; fall back to phone/2-1-1 "How to apply"
@@ -273,6 +293,14 @@ def _next_step_contacts(contacts):
     online_phone = next((c for c in contacts if c["label"] == "How to apply" and _phone_re.search(c["value"])), None)
     online = online_url or online_phone
     phone = next((c for c in contacts if c["label"] == "Contact" and _phone_re.search(c["value"])), None)
+    # PR #13 fix 2: if "How to apply" and "Contact" carry the same primary phone, skip Contact.
+    # Compare only the first phone match in each to avoid false dedup when the Contact
+    # value merely mentions the same service as a secondary reference.
+    if phone is not None and online is not None:
+        _om = _phone_re.search(online["value"])
+        _pm = _phone_re.search(phone["value"])
+        if _om and _pm and _om.group(0) == _pm.group(0):
+            phone = None
     snippets = []
     for item in [online, phone]:
         if item is None:
@@ -283,9 +311,8 @@ def _next_step_contacts(contacts):
             snippets.append(f"Apply online: {_clean_url(url_m.group(0))} (checked {d:%b} {d.day}).")
         else:
             sentence = _first_sentence(item["value"])
-            # Strip the trailing period so "(checked Mon D)." never follows a period
-            if sentence.endswith("."):
-                sentence = sentence[:-1]
+            # PR #13 fix 1: strip only true sentence-ending periods; keep a.m./p.m. intact.
+            sentence = _strip_trailing_period(sentence)
             snippets.append(f"{sentence} (checked {d:%b} {d.day}).")
     return snippets
 
@@ -300,8 +327,8 @@ def _subcat(match, needs):
 
 TEMPLATES = {
     #                        title                          offers                                         next step                                                                                                     why it is ordered here
-    "food_pantry":           ("Visit a local food pantry", "offers free food in your area", "Check the posted hours and visit during an open time.", "Food is running low, and a pantry is usually the fastest way to get food."),
-    "calfresh_benefits":     ("Check food benefits", "provides ongoing help buying food", "Contact the provider or apply through the official site. They decide eligibility based on your household.", "Food is running low this week, and benefits take time, so starting now helps."),
+    "food_pantry":           ("Visit a local food pantry", "offers free food in your area", "Check the posted hours and visit during an open time.", "A pantry is usually the fastest way to get food."),
+    "calfresh_benefits":     ("Check food benefits", "provides ongoing help buying food", "Contact the provider or apply through the official site. They decide eligibility based on your household.", "Benefits take time to process, so starting now helps."),
     "unemployment_insurance":("Apply for unemployment benefits", "can replace part of lost wages after a layoff", "Start the online application. Have your last employer's details and last day worked ready.", "Income replacement supports your other needs, and payments take time to start, so file early."),
     "rental_assistance":     ("Ask about rent help", "offers help with rent in Sacramento", "Contact the provider to confirm requirements and whether assistance is currently available.", "Contacting this program early gives the most time to arrange help."),
     "eviction_prevention":   ("Ask about help to stay in your home", "helps tenants at risk of losing their housing", "Contact the provider to ask what help is available and what documents to bring, such as any notice from your landlord.", "Acting before a housing deadline gives you the most options."),
@@ -354,45 +381,102 @@ _HOUSING_SUBS = {"rental_assistance", "eviction_prevention", "emergency_shelter"
                  "motel_voucher", "housing_legal_aid"}
 
 
-def _overdue_housing_signal(facts):
-    """Return True when the case facts show overdue rent, an eviction notice,
-    or a utility shutoff notice (C-OD2 condition).
+def _immediate_housing_threat(facts, ref_date_str):
+    """Return True ONLY when the case shows an immediate eviction threat: a sheriff
+    notice / writ, or when the user's eviction/rent-consequence date is the soonest
+    dated consequence in the case.  Design §15.2 / PR #13 fix 5.
 
-    Signals:
-    - rent_due_date is in the past (relative to today)
-    - has_written_eviction_notice / landlord_notice_exists is truthy
-    - utility_shutoff_notice is truthy
+    Rules (in priority order):
+    1. Sheriff enforcement or a writ of execution → True (overrides everything).
+    2. An eviction notice exists AND its date (user-stated) is before ref_date + 7 days
+       (i.e. the court/landlord action is imminent).
+    3. rent_due_date is strictly in the past (before ref_date, not on the same day).
+       "Rent due today" is NOT overdue.
+    4. A utility shutoff notice alone is NOT enough to force housing first.
     """
-    today = datetime.now().date()
+    try:
+        today = datetime.strptime(ref_date_str, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return False  # no ref_date → cannot make overdue decision
+
+    # Rule 1: sheriff or writ
+    for field in ("sheriff_notice", "writ_of_execution", "sheriff_enforcement"):
+        val = (facts.get(field) or {}).get("value")
+        if val and str(val).lower() not in ("false", "no", "0", "none", ""):
+            return True
+
+    # Rule 2: eviction notice with an imminent date
+    notice_exists = False
+    for notice_field in ("has_written_eviction_notice", "landlord_notice_exists"):
+        val = (facts.get(notice_field) or {}).get("value")
+        if val and str(val).lower() not in ("false", "no", "0", "none", ""):
+            notice_exists = True
+            break
+    if notice_exists:
+        eviction_date = (facts.get("eviction_date") or {}).get("value")
+        if eviction_date:
+            try:
+                from datetime import timedelta
+                ed = datetime.strptime(str(eviction_date), "%Y-%m-%d").date()
+                if ed <= today + timedelta(days=7):
+                    return True
+                # eviction notice has a date but it is not imminent → fall through
+            except (ValueError, TypeError):
+                pass
+        else:
+            # eviction notice with no date: treat as imminent
+            return True
+
+    # Rule 3: rent_due_date is strictly in the past (today < rent_due_date means NOT overdue)
     rent_due = (facts.get("rent_due_date") or {}).get("value")
     if rent_due:
         try:
-            if datetime.strptime(str(rent_due), "%Y-%m-%d").date() <= today:
+            rd = datetime.strptime(str(rent_due), "%Y-%m-%d").date()
+            if rd < today:   # strictly past; today == rd is NOT overdue
                 return True
         except (ValueError, TypeError):
             pass
-    for notice_field in ("has_written_eviction_notice", "landlord_notice_exists",
-                         "utility_shutoff_notice"):
-        val = (facts.get(notice_field) or {}).get("value")
-        if val and str(val).lower() not in ("false", "no", "0", "none", ""):
-            return True
+
+    # Rule 4: utility shutoff notice alone → False (does not reorder housing)
     return False
 
 
-def _sort_key_6(action, housing_first):
+def _sort_key_6(action, housing_first, action_sub=None):
     """Sort key for Agent 6 actions (A6-03 + C-OD2).
 
     Primary: order_group (first < parallel < later).
     Within group: housing sub before non-housing ONLY when housing_first is True.
     Then: earliest official_deadline, user_target_date, processing_time presence.
+    action_sub is the {action_id -> subcategory} lookup (internal; not in action dict).
     """
     g = GROUP_ORDER[action["order_group"]]
     dl = action.get("official_deadline") or _FAR_DATE
     ud = action.get("user_target_date") or _FAR_DATE
-    sub = action.get("_subcategory", "")
+    sub = (action_sub or {}).get(action.get("action_id"), "")
     is_non_housing = (0 if sub in _HOUSING_SUBS else 1) if housing_first else 0
     has_pt = 0 if action.get("estimated_processing_time") else 1
     return (g, is_non_housing, dl, ud, has_pt)
+
+
+def _parse_processing_days(proc_time_str):
+    """Parse a processing-time string into calendar days (PR #13 fix 10).
+
+    Understands "30 days", "4 weeks", "2 months" (1 month ≈ 30 days).
+    Falls back to treating the number as days when no unit is given.
+    """
+    s = str(proc_time_str).lower()
+    m = re.search(r"(\d+)\s*(day|week|month|wk)", s)
+    if not m:
+        # bare number → days
+        m2 = re.search(r"(\d+)", s)
+        return int(m2.group(1)) if m2 else None
+    n = int(m.group(1))
+    unit = m.group(2)
+    if unit.startswith("week") or unit == "wk":
+        return n * 7
+    if unit.startswith("month"):
+        return n * 30
+    return n  # days
 
 
 def agent_6(request):
@@ -401,20 +485,33 @@ def agent_6(request):
     needs = {n["need_id"]: n for n in p["needs"]}
     facts = _facts(request, p)
     claims = p.get("checked_claims", [])
+    # PR #13 fix 4: read ref_date from payload; never use datetime.now() for date comparisons.
+    ref_date_str = p.get("ref_date") or ""
+    issues_out = []
+    ref_date_ok = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", ref_date_str))
+    if not ref_date_ok:
+        issues_out.append(_issue("MISSING_REF_DATE", "warning",
+                                 "ref_date is missing or not an ISO date; overdue/time-left decisions are skipped."))
     actions = []
 
     def add(**kw):
         # A6-01: contract 4.6 allows only need_id (singular); no need_ids field.
+        # PR #13 fix 3: strip any key starting with "_" so internal keys never leak.
         a = {"action_id": f"act_{len(actions) + 1:02d}", "need_id": None,
              "program_id": None, "suggested_priority": None,
              "order_group": "parallel", "rationale": "", "dependency_ids": [], "official_deadline": None,
              "user_target_date": None, "estimated_processing_time": None, "evidence_refs": [],
              "uncertainty_notes": [], "user_override_allowed": True}
         a.update(kw)
+        # Strip internal keys (e.g. _subcategory) — they must not appear in output.
+        for k in [k for k in a if k.startswith("_")]:
+            del a[k]
         actions.append(a)
         return a
 
-    app_ids = []
+    # Keep _subcategory only in a parallel lookup so _sort_key_6 can still use it.
+    _action_sub = {}  # action_id -> subcategory (internal only)
+
     for m in p["matches"]:
         if m["match_status"] == "confirmed_mismatch":
             continue  # never recommended
@@ -426,14 +523,25 @@ def agent_6(request):
         # A6-01: one action per need_id when the match covers multiple needs.
         for need_id in m["need_ids"]:
             need = needs[need_id]
-            why = TEMPLATES.get(sub, DEFAULT)[3]
+            # PR #13 fix 7: urgency wording only when urgency is "immediate".
+            base_why = TEMPLATES.get(sub, DEFAULT)[3]
             group = {"immediate": "first", "high": "parallel", "unknown": "parallel"}.get(need["urgency"], "later")
+            # PR #13 fix 6: respect user_priority — a need ranked 1 must not be in a later group
+            # than any other need of the same or lower urgency.  Promote to "first" when priority==1.
+            user_pri = need.get("user_priority")
+            if user_pri == 1 and group not in ("first",):
+                group = "first"
             user_date = timing.get("user_target_date")
             if not user_date and need["category"] == "housing_assistance" and "rent_due_date" in facts:
                 user_date = facts["rent_due_date"]["value"]  # the user's own date, never an official deadline
             # A6-04: only append date wording when a real date exists.
-            if user_date:
-                why += f" You told us your date is {_fmt_date(user_date)} (your date, not a program deadline)."
+            # PR #13 fix 9: do not repeat the date — include it once (in the deadline sentence below).
+            # PR #13 fix 7: prefix urgency phrase for food/pantry/calfresh only when immediate.
+            if need.get("urgency") == "immediate" and sub in ("food_pantry", "calfresh_benefits"):
+                urgency_prefix = "Food is running low. "
+            else:
+                urgency_prefix = ""
+            why = urgency_prefix + base_why
             dependency = []
             if dl and dl["status"] == "conflicting":
                 # A6-02: build a readable date list; handle empty dates (when claim_value was None).
@@ -450,53 +558,64 @@ def agent_6(request):
                               rationale=rationale_text,
                               evidence_refs=[r for c in _deadline_claims(m["program_id"], claims) for r in c["evidence_refs"]],
                               uncertainty_notes=[conflict_note]
-                              + (["This program is temporarily closed right now. Confirm the deadline when it reopens."] if closed else []),
-                              _subcategory=sub)
+                              + (["This program is temporarily closed right now. Confirm the deadline when it reopens."] if closed else []))
+                _action_sub[confirm["action_id"]] = sub
                 dependency = [confirm["action_id"]]
             notes = _uncertainty(m, p)
             refs = list(m["evidence_refs"])
             if _availability(p).get(m["program_id"]) == "temporarily_closed":
                 group = "later"  # never presented as current help (contract 4.6)
                 reopen, ev = _reopen_date(p, m["program_id"])
+                # PR #13 fix 12 (A6-05): "Use an open option first" only when an open option
+                # actually exists for this need.
+                has_open_for_need = any(
+                    om["program_id"] != m["program_id"]
+                    and need_id in om["need_ids"]
+                    and _availability(p).get(om["program_id"]) != "temporarily_closed"
+                    and om["match_status"] != "confirmed_mismatch"
+                    for om in p["matches"]
+                )
+                open_suffix = " Use an open option first." if has_open_for_need else ""
                 if reopen:
                     after = f", after your {_short_date(user_date)} date" if user_date and reopen > user_date else ""
-                    why = f"Temporarily closed. Reopens {_short_date(reopen)}{after}. Use an open option first."
+                    why = f"Temporarily closed. Reopens {_short_date(reopen)}{after}.{open_suffix}"
                     notes.append(f"This program is temporarily closed and reopens {_fmt_date(reopen)}{after}.")
                     refs.append(ev)
                 else:
-                    why = "Temporarily closed. No reopening date is published. Use an open option first."
+                    why = f"Temporarily closed. No reopening date is published.{open_suffix}"
                     notes.append("This program is temporarily closed. No reopening date was found; check with the provider later.")
             # A6-03: if processing_time is longer than time left before target_date, say so.
-            if proc_time and user_date:
+            # PR #13 fix 4: only when ref_date is known. Fix 10: parse unit properly.
+            if proc_time and user_date and ref_date_ok:
                 try:
-                    days_left = (datetime.strptime(user_date, "%Y-%m-%d") - datetime.now()).days
-                    pt_num = re.search(r"(\d+)", str(proc_time))
-                    if pt_num:
-                        pt_days = int(pt_num.group(1)) * 7  # weeks → days (conservative)
-                        if pt_days > days_left:
-                            notes.append(
-                                f"The estimated processing time ({proc_time}) may be longer than the time before your "
-                                f"target date ({_fmt_date(user_date)}). Starting as early as possible is important, "
-                                f"but the provider decides timing and this estimate is not a guarantee."
-                            )
+                    days_left = (datetime.strptime(user_date, "%Y-%m-%d") -
+                                 datetime.strptime(ref_date_str, "%Y-%m-%d")).days
+                    pt_days = _parse_processing_days(proc_time)
+                    if pt_days is not None and pt_days > days_left:
+                        notes.append(
+                            f"The estimated processing time ({proc_time}) may be longer than the time before your "
+                            f"target date ({_fmt_date(user_date)}). Starting as early as possible is important, "
+                            f"but the provider decides timing and this estimate is not a guarantee."
+                        )
                 except (ValueError, TypeError):
                     pass
             # A6-03: include deadline in rationale when it drives ordering.
+            # PR #13 fix 9: include user_date in rationale only if not already mentioned above.
             if dl and dl["status"] == "verified":
                 why += f" The official deadline is {_fmt_date(dl['value'])}."
             elif user_date and not dl:
+                # Only add once — the base_why does not mention the date.
                 why += f" Acting before your date of {_fmt_date(user_date)} gives the most time."
             a = add(need_id=need_id, program_id=m["program_id"],
                     order_group=group, rationale=why,
                     dependency_ids=dependency,
                     official_deadline=dl["value"] if dl and dl["status"] == "verified" else None,
                     user_target_date=user_date, estimated_processing_time=proc_time,
-                    evidence_refs=refs, uncertainty_notes=notes, _subcategory=sub)
-            if sub in ("calfresh_benefits", "unemployment_insurance"):
-                app_ids.append(a["action_id"])
-    if app_ids:
-        add(order_group="later", rationale="This depends on the applications above being submitted first.",
-            dependency_ids=app_ids, _subcategory="")
+                    evidence_refs=refs, uncertainty_notes=notes)
+            _action_sub[a["action_id"]] = sub
+            # PR #13 fix 8: remove the generic "Follow up" action (program_id None).
+            # No longer track app_ids; we do NOT add a follow-up action.
+    # PR #13 fix 8: the generic "Follow up on your applications" action is removed.
     # an open program for the same need as a closed one goes first
     avail = _availability(p)
     closed_needs = {a["need_id"] for a in actions if a["program_id"] and avail.get(a["program_id"]) == "temporarily_closed"}
@@ -505,8 +624,9 @@ def agent_6(request):
             a["order_group"] = "first"
             a["rationale"] += " This is the open option for this need while another program is closed."
     # A6-03 + C-OD2: sort by group, then conditionally housing-first, then deadlines.
-    housing_first = _overdue_housing_signal(facts)
-    actions.sort(key=lambda a: _sort_key_6(a, housing_first))
+    # PR #13 fix 4/5: use ref_date; only _immediate_housing_threat triggers housing-first.
+    housing_first = _immediate_housing_threat(facts, ref_date_str) if ref_date_ok else False
+    actions.sort(key=lambda a: _sort_key_6(a, housing_first, _action_sub))
     group_counters = {}
     for a in actions:
         g = a["order_group"]
@@ -514,8 +634,8 @@ def agent_6(request):
         a["suggested_priority"] = group_counters[g]
     # A6-01: coverage uses each action's own need_id (one per action).
     covered = {a["need_id"] for a in actions}
-    issues = [_issue("COVERAGE_GAP", "warning", f"No action found for {n}", n) for n in needs if n not in covered]
-    return _envelope(request, "completed", {"proposed_actions": actions}, issues)
+    issues_out += [_issue("COVERAGE_GAP", "warning", f"No action found for {n}", n) for n in needs if n not in covered]
+    return _envelope(request, "completed", {"proposed_actions": actions}, issues_out)
 
 # ================================================================ Agent 8: plan builder
 
@@ -598,24 +718,19 @@ def agent_8(request):
         else:
             contacts = []
         if not m:
-            title, reason = "Follow up on your applications", "Checking in helps you catch any requests for more information."
-            next_step = "After applying, watch for letters or messages and respond to any requests for documents."
+            # PR #13 fix 8: skip generic "Follow up" cards (program_id None).
+            continue
         # A6-01: related_need_ids = all need_ids from the merged group (deduplicated, ordered).
-        # B/A8-01: fall back to match's need_ids when action need_id is null; follow-up
-        # action uses the dependency need_ids.
-        if m:
-            # Collect need_id from each action in the group; filter out None.
-            group_need_ids = list(dict.fromkeys(
-                x["need_id"] for x in group if x.get("need_id") is not None))
-            if group_need_ids:
-                related = group_need_ids
-            else:
-                related = m["need_ids"]
-        else:
-            related = sorted({x["need_id"] for x in acts if x["action_id"] in a["dependency_ids"]})
+        # B/A8-01: fall back to match's need_ids when action need_id is null.
+        # Collect need_id from each action in the group; filter out None.
+        group_need_ids = list(dict.fromkeys(
+            x["need_id"] for x in group if x.get("need_id") is not None))
+        related = group_need_ids if group_need_ids else m["need_ids"]
         # Merge evidence refs across the whole group.
         merged_ev = list(dict.fromkeys(r for x in group for r in x["evidence_refs"]))
         source_action_ids = [x["action_id"] for x in group]
+        # PR #13 fix 11: merge uncertainty_notes from all actions in the group.
+        merged_notes = list(dict.fromkeys(n for x in group for n in x.get("uncertainty_notes", [])))
         # card_id is keyed by the first action in the group.
         cards.append({
             "card_id": id_map[a["action_id"]], "source_action_ids": source_action_ids,
@@ -623,9 +738,9 @@ def agent_8(request):
             "action_title": title, "reason": reason, "next_step": next_step,
             "priority_reason": a["rationale"],
             "order_group": a["order_group"],
-            "dependency_card_ids": [id_map[d] for d in a["dependency_ids"]],
+            "dependency_card_ids": [id_map[d] for d in a["dependency_ids"] if d in id_map],
             "source_refs": a.get("evidence_refs", merged_ev),
-            "uncertainty_notes": a["uncertainty_notes"],
+            "uncertainty_notes": merged_notes,
             "official_deadline": a["official_deadline"], "user_target_date": a["user_target_date"],
             "processing_estimate": a["estimated_processing_time"], "progress_status": "not_started",
             "contacts": contacts,
@@ -878,6 +993,14 @@ def agent_10(request):
     for opt in plan.get("potential_options", []):
         if not opt.get("official_link") or not opt.get("what_needs_checking"):
             flag(None, "V11", f"Potential option {opt.get('program_id')} lacks an official link or what needs checking", "Add both.")
+    # PR #13 fix 11 (Agent 10): flag any dependency_card_ids pointing to a card that does not exist.
+    existing_card_ids = {c["card_id"] for c in cards}
+    for c in cards:
+        for dep_id in c.get("dependency_card_ids", []):
+            if dep_id not in existing_card_ids:
+                flag(c["card_id"], "V12",
+                     f"dependency_card_ids references card {dep_id} which does not exist in this plan",
+                     "Remove the stale dependency or add the missing card.")
     # A10-02: each card's related_need_ids must only contain needs that the original match actually covers.
     for c in cards:
         pid = c.get("program_id")
