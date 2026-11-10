@@ -112,5 +112,72 @@ class TestAgent2(unittest.TestCase):
         self.assertNotIn("household_gross_monthly_income", asked_keys)
 
 
+    def test_missing_zip_code_question_generated_on_turn_1(self):
+        """Item 2: Agent 2 must emit a zip_code clarification (can_skip=False) when
+        zip_code is absent from case_facts and has not been asked yet."""
+        req = {
+            "request_id": "req-zip-q",
+            "run_id": "run-0001",
+            "case_id": "case-zip-001",
+            "case_version": 1,
+            "schema_version": "1.0",
+            "role_id": "agent_2",
+            "task_type": "clarify_case",
+            "payload": {
+                "needs": [{"need_id": "need_001", "category": "housing_assistance"}],
+                "case_facts": [
+                    {"field": "employment_status", "value": "laid_off"},
+                    {"field": "household_gross_monthly_income", "value": 1500},
+                ],
+                "already_asked": [],
+                "candidate_requirements": [],
+                "ambiguity_flags": [],
+            },
+        }
+        res = handle_agent_2(req)
+        self.assertEqual(res["status"], "needs_clarification")
+        asked_keys = [r["fact_key"] for r in res["clarification_requests"]]
+        self.assertIn("zip_code", asked_keys)
+        zip_q = next(r for r in res["clarification_requests"] if r["fact_key"] == "zip_code")
+        self.assertFalse(zip_q["can_skip"])
+
+    def test_missing_household_size_question_when_needed(self):
+        """Item 3: Agent 2 must emit a household_size clarification (can_skip=True) when
+        household_size is absent and candidate_requirements reference it."""
+        req = {
+            "request_id": "req-hh-q",
+            "run_id": "run-0001",
+            "case_id": "case-hh-001",
+            "case_version": 1,
+            "schema_version": "1.0",
+            "role_id": "agent_2",
+            "task_type": "clarify_case",
+            "payload": {
+                "needs": [{"need_id": "need_001", "category": "food_assistance"}],
+                "case_facts": [
+                    {"field": "zip_code", "value": "95823"},
+                    {"field": "household_gross_monthly_income", "value": 1200},
+                ],
+                "already_asked": ["zip_code"],
+                "candidate_requirements": [
+                    {
+                        "program_id": "prog_food",
+                        "fact_key": "household_size",
+                        "verified_rule_ref": "rule_hh_size",
+                    }
+                ],
+                "ambiguity_flags": [],
+            },
+        }
+        res = handle_agent_2(req)
+        self.assertEqual(res["status"], "needs_clarification")
+        asked_keys = [r["fact_key"] for r in res["clarification_requests"]]
+        self.assertIn("household_size", asked_keys)
+        hh_q = next(r for r in res["clarification_requests"] if r["fact_key"] == "household_size")
+        self.assertTrue(hh_q["can_skip"])
+        # Pacing ceiling: never more than 2 questions per turn
+        self.assertLessEqual(len(res["clarification_requests"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

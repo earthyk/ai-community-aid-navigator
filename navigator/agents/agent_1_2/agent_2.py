@@ -2,9 +2,13 @@
 AI Community Aid Navigator — Agent 2: Case Analysis & Clarification
 Contracts: docs/contracts/SHARED_CONTRACTS.md (v1.1)
 Pure standard library implementation (Python 3.11+). Zero external dependencies.
-Rules: 4-Gate Question Filter, Pacing Ceiling (<= 1 cluster/turn), Preservation of Unknowns
+Rules: 4-Gate Question Filter, Pacing Ceiling (<= 2/turn §30.8), Preservation of Unknowns
 
 Contract invariants enforced:
+- ZIP Code Question (Item 2): if zip_code is not known and not asked, Agent 2 asks for the
+  resident's Sacramento ZIP code with can_skip=False on Turn 1.
+- Household Size Question (Item 3): if household_size is not known and not asked, and either
+  candidate_requirements ask for it or food_assistance is in needs, ask with can_skip=True.
 - Income Question: if household_gross_monthly_income is not known, not asked, AND no
   candidate_requirements are provided, Agent 2 MUST generate a question for it with can_skip=False.
 - Eviction Notice Details: When has_written_eviction_notice is True in case_facts, Agent 2 asks
@@ -12,7 +16,9 @@ Contract invariants enforced:
 - Gate 3 (verified_rule_ref): questions without a valid rule ref are suppressed.
 - Gate 2: already-asked facts are never re-asked.
 - Gate 1: known facts are never asked (except eviction follow-up).
-- Pacing ceiling: max 1-2 clarification requests per turn.
+- Pacing ceiling: max 2 clarification requests per turn (§30.8).
+- Backward Compatibility (Item 4): triggering_circumstances already_asked key covers
+  triggering_events / employment_status root-cause tokens from previous turns.
 """
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Set
@@ -80,6 +86,12 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     clarification_requests: List[Dict[str, Any]] = []
     seen_keys: Set[str] = set()
 
+    # Backward Compatibility (Item 4): if triggering_circumstances was previously asked,
+    # treat it as covering triggering_events and employment_status root-cause tokens.
+    if "triggering_circumstances" in already_asked_keys:
+        already_asked_keys.add("triggering_events")
+        already_asked_keys.add("employment_status")
+
     # Step 1 — Circumstance-First Gate: ask about root cause before anything else
     unspecified_hardship = "unspecified_hardship_cause" in ambiguity_flags
     circumstances_already_asked = "triggering_circumstances" in already_asked_keys
@@ -121,8 +133,44 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             "is_mock": True,
         }
 
-    # 3. Income Question — only when no candidate_requirements are provided, not already asked,
-    #    and circumstances have been established (i.e. unspecified_hardship_cause is NOT flagged)
+    # 2. ZIP Code Question (Item 2) — Turn 1 only: ask when zip_code is not known, not already asked,
+    #    there is at least one service need, no unspecified_hardship gate is active,
+    #    and no urgent eviction follow-up is displacing the turn.
+    #    "Turn 1" is identified by an empty already_asked list (raw, before backward-compat expansion).
+    has_zip_fact = "zip_code" in known_keys
+    zip_already_asked = "zip_code" in already_asked_keys
+    notice_is_reported_early = known_facts.get("has_written_eviction_notice") is True
+    eviction_followup_pending = (
+        notice_is_reported_early
+        and ("eviction_notice_type" not in already_asked_keys)
+        and ("eviction_notice_type" not in known_keys)
+    )
+    is_turn_1 = len(raw_already_asked) == 0
+
+    if (
+        not has_zip_fact
+        and not zip_already_asked
+        and not unspecified_hardship
+        and needs  # only when there is an actual service need
+        and not eviction_followup_pending
+        and is_turn_1  # only ask on the first turn (§ Item 2)
+    ):
+        if len(clarification_requests) < 2:
+            clarification_requests.append({
+                "fact_key": "zip_code",
+                "question_intent": "Determine resident's Sacramento service area ZIP code",
+                "user_facing_question": (
+                    "What is your Sacramento ZIP code? "
+                    "This helps us find the right local programs in your area."
+                ),
+                "reason": "ZIP code is required to match geographic eligibility for local programs",
+                "applicable_program_ids": [],
+                "verified_rule_ref": None,
+                "necessity_level": "required_for_decision",
+                "can_skip": False,
+            })
+            seen_keys.add("zip_code")
+
     # 3. Income Question — ask only when:
     #    - income is not already known
     #    - income has not been asked
@@ -132,7 +180,11 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     has_income_fact = "household_gross_monthly_income" in known_keys
     income_already_asked = "household_gross_monthly_income" in already_asked_keys
     notice_is_reported = known_facts.get("has_written_eviction_notice") is True
-    eviction_followup_pending = notice_is_reported and ("eviction_notice_type" not in already_asked_keys) and ("eviction_notice_type" not in known_keys)
+    eviction_followup_pending = (
+        notice_is_reported
+        and ("eviction_notice_type" not in already_asked_keys)
+        and ("eviction_notice_type" not in known_keys)
+    )
 
     if (
         not has_income_fact
@@ -237,8 +289,45 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             "can_skip": can_skip,
         })
 
+    # 5b. Household Size Question (Item 3) — asked after all higher-priority questions are settled:
+    #    - household_size is not known and not already asked
+    #    - AND (candidate_requirements referenced it OR food_assistance is a need)
+    #    - AND income is already known (not pending this turn)
+    #    - AND no other question was generated this turn (pacing: fill only when the turn is otherwise empty)
+    has_hh_size_fact = "household_size" in known_keys
+    hh_size_already_asked = "household_size" in already_asked_keys
+    cand_needs_hh_size = any(
+        isinstance(r, dict) and str(r.get("fact_key", "")).strip() == "household_size"
+        for r in candidate_requirements
+    )
+    has_food_need_for_hh = any(
+        isinstance(n, dict) and n.get("category") == "food_assistance" for n in needs
+    )
+
+    if (
+        not has_hh_size_fact
+        and not hh_size_already_asked
+        and "household_size" not in seen_keys
+        and (cand_needs_hh_size or has_food_need_for_hh)
+        and has_income_fact  # income must already be known, not being asked this turn
+        and len(clarification_requests) == 0  # only when no other question was generated this turn
+    ):
+        clarification_requests.append({
+            "fact_key": "household_size",
+            "question_intent": "Determine total number of people in the household",
+            "user_facing_question": (
+                "How many people are currently living in your household, including yourself?"
+            ),
+            "reason": "Household size affects eligibility thresholds for food and assistance programs",
+            "applicable_program_ids": [],
+            "verified_rule_ref": None,
+            "necessity_level": "required_for_decision",
+            "can_skip": True,
+        })
+        seen_keys.add("household_size")
+
     # 6. Conditional Food Check (§19.1)
-    has_food_need = any(n.get("category") == "food_assistance" for n in needs if isinstance(n, dict))
+    has_food_need = any(isinstance(n, dict) and n.get("category") == "food_assistance" for n in needs)
     has_income_need_flag = any(n.get("category") == "income_assistance" for n in needs if isinstance(n, dict))
     has_income_loss_fact = any(
         any(k in str(f.get("value", "")) for k in ["laid_off", "bereavement", "unemployed", "fired"])

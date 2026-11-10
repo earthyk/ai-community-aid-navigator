@@ -922,6 +922,55 @@ def _parse_clarification(payload: Dict[str, Any], env: Dict[str, Any]) -> Dict[s
                 except ValueError:
                     pass
 
+    # 3b. ZIP Code Parsing
+    if "zip_code" in keys:
+        zip_m = re.search(r"\b(9\d{4})\b", ans)
+        if zip_m:
+            facts.append({
+                "fact_id": _fact_id("zip_code", len(facts) + 1),
+                "field": "zip_code",
+                "value": zip_m.group(1),
+                "confirmation_status": "proposed",
+                "source": "user_statement",
+                "time_context": None,
+            })
+
+    # 3c. Household Size Parsing
+    if "household_size" in keys:
+        hh_m = re.search(r"\b(\d+)\s*(?:people|persons?|members?|of\s+us|in\s+(?:my|our|the)\s+(?:household|family|home))?\b", ans_lower)
+        # Prefer a direct digit or word count
+        hh_word_m = re.search(
+            r"\b(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:people|persons?|members?|of\s+us)\b",
+            ans_lower,
+        )
+        _HH_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+        if hh_word_m:
+            raw = hh_word_m.group(1)
+            hh_val = _HH_WORDS.get(raw) or (int(raw) if raw.isdigit() else None)
+            if hh_val is not None:
+                facts.append({
+                    "fact_id": _fact_id("household_size", len(facts) + 1),
+                    "field": "household_size",
+                    "value": hh_val,
+                    "confirmation_status": "proposed",
+                    "source": "user_statement",
+                    "time_context": None,
+                })
+        elif re.search(r"^\s*\d+\s*$", ans.strip()):
+            try:
+                hh_val = int(ans.strip())
+                facts.append({
+                    "fact_id": _fact_id("household_size", len(facts) + 1),
+                    "field": "household_size",
+                    "value": hh_val,
+                    "confirmation_status": "proposed",
+                    "source": "user_statement",
+                    "time_context": None,
+                })
+            except ValueError:
+                pass
+
     # 4. Rent Amount & Overdue Amount Extraction
     rent_m = re.search(r"\b(?:rent|amount\s+due)\b[^\.\;\n]*?\$?([0-9,]+)", ans, re.I)
     if rent_m:
