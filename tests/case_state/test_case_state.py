@@ -1,4 +1,4 @@
-"""Tests for Case State v0.1 (owner: Silver). Fixed timestamps; nothing depends on today's date."""
+"""Tests for Case State v0.2 (owner: Silver). Fixed timestamps; nothing depends on today's date."""
 import json
 import sqlite3
 import unittest
@@ -67,13 +67,24 @@ class CaseStateTests(unittest.TestCase):
 
     def test_only_the_user_sets_progress_and_history_shows_it(self):
         store.set_card_status(self.db, "case-001", "card_02", "in_progress", T1)
-        store.set_card_status(self.db, "case-001", "card_02", "completed", T2)
+        store.set_card_status(self.db, "case-001", "card_02", "completed_received", T2)
         with self.assertRaises(store.CaseStateError):
             store.set_card_status(self.db, "case-001", "card_02", "not_started", T3, actor="agent_8")
         with self.assertRaises(store.CaseStateError):
             store.set_card_status(self.db, "case-001", "card_02", "approved", T3)
         changes = [json.loads(e["details_json"]) for e in store.history(self.db, "case-001") if e["event_type"] == "status_changed"]
-        self.assertEqual([(c["from"], c["to"]) for c in changes], [(None, "in_progress"), ("in_progress", "completed")])
+        self.assertEqual([(c["from"], c["to"]) for c in changes], [(None, "in_progress"), ("in_progress", "completed_received")])
+
+    def test_all_six_contract_statuses_accepted_others_rejected(self):
+        """§3.6: exactly six card progress statuses are valid; anything else raises CaseStateError."""
+        valid = ("not_started", "in_progress", "contacted_applied",
+                 "waiting_for_response", "completed_received", "unsuccessful")
+        for i, s in enumerate(valid):
+            store.set_card_status(self.db, "case-001", f"card_{i:02d}", s, T1)
+        # old values that no longer exist must be rejected
+        for bad in ("waiting", "completed", "need_help", "approved", "pending", ""):
+            with self.assertRaises(store.CaseStateError, msg=f"expected rejection of {bad!r}"):
+                store.set_card_status(self.db, "case-001", "card_bad", bad, T2)
 
     def test_skipped_question_stays_unknown(self):
         store.record_clarification(self.db, "case-001", "has_written_eviction_notice", "Did you get a written notice?", T1, skipped=True)

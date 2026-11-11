@@ -1,4 +1,4 @@
-"""Case State store v0.1 (owner: Silver). Plain Python 3.11+, sqlite3 only, path-independent
+"""Case State store v0.2 (owner: Silver). Plain Python 3.11+, sqlite3 only, path-independent
 (works inside Orchestrate or an external app; only the database file location differs).
 
 Rules: every change bumps case_version and is logged in `events` (append-only); facts are never edited in place
@@ -12,8 +12,9 @@ SCHEMA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
 # Mirrors the Supervisor's privacy check (S9): never stored as a fact.
 FORBIDDEN_FIELDS = {"ssn", "social_security_number", "date_of_birth", "dob", "birth_date", "id_number",
                     "drivers_license", "bank_account", "account_number", "routing_number", "card_number"}
-# User-controlled card progress (Julia, Nov 3). PROPOSED until the Plan / My case screens are final.
-PROGRESS_STATUSES = ("not_started", "in_progress", "waiting", "completed", "need_help")
+# User-controlled card progress (Shared JSON Contracts §3.6).
+PROGRESS_STATUSES = ("not_started", "in_progress", "contacted_applied", "waiting_for_response",
+                     "completed_received", "unsuccessful")
 
 
 class CaseStateError(ValueError):

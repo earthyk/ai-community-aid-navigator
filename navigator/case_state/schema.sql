@@ -1,4 +1,4 @@
--- Case State schema v0.1 (owner: Silver). SQLite, Python standard library only (sqlite3).
+-- Case State schema v0.2 (owner: Silver). SQLite, Python standard library only (sqlite3).
 -- One Case = one person's situation. Every change creates a new case_version; nothing is overwritten in place.
 -- Privacy: location is ZIP or county only. No SSN, date of birth, ID, bank or card numbers (contracts S9).
 
@@ -100,10 +100,13 @@ CREATE TABLE IF NOT EXISTS card_needs (
 );
 
 -- Progress the USER sets on a card. Agents never write here.
+-- Only the Supervisor writes to the case store, and only after a result passes S9 validation;
+-- agents never write to it. Users change only their own card statuses.
 CREATE TABLE IF NOT EXISTS card_status (
     case_id     TEXT NOT NULL REFERENCES cases(case_id),
     card_id     TEXT NOT NULL,
-    status      TEXT NOT NULL,                        -- allowed values: store.PROGRESS_STATUSES
+    status      TEXT NOT NULL CHECK (status IN ('not_started', 'in_progress', 'contacted_applied',
+                                                'waiting_for_response', 'completed_received', 'unsuccessful')),
     note        TEXT,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (case_id, card_id)
