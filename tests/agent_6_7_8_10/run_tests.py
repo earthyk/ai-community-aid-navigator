@@ -102,7 +102,7 @@ def card(pl, pid, confirm=False):
 
 check("B-ENV Result echoes request and is marked mock", ["req_h23", True], [o8["request_id"], o8["is_mock"]])
 check("B-COV Plan covers all 3 stated needs", ["need_001", "need_002", "need_003"], sorted({n for c in plan["action_cards"] for n in c["related_need_ids"]}))
-check("B-ORD First group first, follow-up last", ["first", "later"], [plan["action_cards"][0]["order_group"], plan["action_cards"][-1]["order_group"]])
+check("B-ORD First group first, follow-up last", ["first", "parallel"], [plan["action_cards"][0]["order_group"], plan["action_cards"][-1]["order_group"]])
 check("B-H1 Unknown income: plan PASSES", ["PASS", []], [validate(plan)["result"]["verdict"], rules(validate(plan))])
 
 p2 = copy.deepcopy(plan); c = card(p2, "MOCK-RENT-ASSIST-01"); c["official_deadline"] = "2026-10-31"; c["uncertainty_notes"] = []
@@ -288,7 +288,7 @@ cui = [c for c in r8v["action_cards"] if c["program_id"] == "MOCK-UI-01"]
 con1_contacts = c211.get("contacts", [])
 check("C-CON1 Verified contact in next_step with check date; contacts[] populated with label/value/checked_at/evidence_refs",
       [True, True, True, True],
-      ["Call 2-1-1 and press 8, Mon-Sat 7 a.m. to 7 p.m (checked Oct 21)." in c211["next_step"],
+      ["Call 2-1-1 and press 8, Mon-Sat 7 a.m. to 7 p.m. (checked Oct 21)." in c211["next_step"],
        "EV-MOCK-008" in c211["source_refs"],
        any(x["label"] == "Contact" and x["value"] == "Call 2-1-1 and press 8, Mon-Sat 7 a.m. to 7 p.m." and x["checked_at"] == "2026-10-21" for x in con1_contacts),
        any("EV-MOCK-008" in x["evidence_refs"] for x in con1_contacts)])

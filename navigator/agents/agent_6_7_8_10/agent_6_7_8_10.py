@@ -93,7 +93,13 @@ def _deadline_claims(program_id, claims):
 
 
 def _deadline_info(program_id, claims):
-    """Official deadline only from Agent 5 evidence. Conflicts are never resolved silently."""
+    """Official deadline only from Agent 5 evidence. Conflicts are never resolved silently.
+
+    Treats as conflicting:
+    - any claim with verification_status == "conflicting"
+    - two or more verified claims with different non-None values
+    - a verified claim whose claim_value is None (unknown deadline, cannot be shown)
+    """
     dl = _deadline_claims(program_id, claims)
     conflicting = [c for c in dl if c["verification_status"] == "conflicting"]
     if conflicting:
@@ -101,9 +107,16 @@ def _deadline_info(program_id, claims):
         for c in conflicting:
             dates += re.findall(r"\d{4}-\d{2}-\d{2}", str(c["claim_value"]))
         return {"status": "conflicting", "dates": sorted(set(dates))}
-    verified = [c for c in dl if c["verification_status"] == "verified" and c["claim_value"]]
-    if verified:
-        return {"status": "verified", "value": verified[0]["claim_value"]}
+    verified = [c for c in dl if c["verification_status"] == "verified"]
+    # A verified claim with claim_value=None means the deadline is unknown; treat as conflict.
+    if any(c["claim_value"] is None for c in verified):
+        return {"status": "conflicting", "dates": []}
+    # Two or more verified claims with different values: pick neither (A6-02).
+    values = list(dict.fromkeys(c["claim_value"] for c in verified if c["claim_value"]))
+    if len(values) >= 2:
+        return {"status": "conflicting", "dates": sorted(values)}
+    if values:
+        return {"status": "verified", "value": values[0]}
     return None
 
 
@@ -244,15 +257,35 @@ def _first_sentence(text, max_chars=120):
     return cut + "…"
 
 
+# Abbreviation pattern: letter(s) . letter(s) . — e.g. "a.m." or "p.m."
+_ABBREV_END_RE = re.compile(r"\b[a-z]\.[a-z]\.$", re.I)
+
+
+def _strip_trailing_period(sentence):
+    """Strip a trailing '.' ONLY when it is a true sentence-ending period.
+
+    Abbreviations like 'a.m.' or 'p.m.' end with '.' but must NOT be stripped
+    because they are not sentence-ending punctuation.
+    """
+    if not sentence.endswith("."):
+        return sentence
+    if _ABBREV_END_RE.search(sentence):
+        return sentence  # abbreviation — keep the period
+    return sentence[:-1]
+
+
 def _next_step_contacts(contacts):
     """
     Return at most 2 contact snippets for next_step (v0.7+):
     1. First "How to apply" item that has a URL → "Apply online: <url> (checked Mon D)."
        If no URL item, the first "How to apply" item with a phone or 2-1-1 pattern.
-    2. First "Contact" item with a phone pattern.
+    2. First "Contact" item with a phone pattern, UNLESS its phone number is already
+       present in the "How to apply" snippet (item 1) — dedup so the same number is
+       never shown twice (PR #13 fix 2).
     Each non-URL item uses only the first sentence (≤ 120 chars) of the value.
-    Double periods are avoided: if the sentence already ends with ".", it is stripped
-    before appending " (checked Mon D).".
+    Double periods are avoided: if the sentence already ends with a true sentence
+    period (not an abbreviation like a.m. / p.m.), it is stripped before appending
+    " (checked Mon D)." (PR #13 fix 1).
     """
     _phone_re = re.compile(r"\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}|\b2-1-1\b|\b211\b", re.I)
     # 1st snippet: URL "How to apply" first; fall back to phone/2-1-1 "How to apply"
@@ -260,6 +293,14 @@ def _next_step_contacts(contacts):
     online_phone = next((c for c in contacts if c["label"] == "How to apply" and _phone_re.search(c["value"])), None)
     online = online_url or online_phone
     phone = next((c for c in contacts if c["label"] == "Contact" and _phone_re.search(c["value"])), None)
+    # PR #13 fix 2: if "How to apply" and "Contact" carry the same primary phone, skip Contact.
+    # Compare only the first phone match in each to avoid false dedup when the Contact
+    # value merely mentions the same service as a secondary reference.
+    if phone is not None and online is not None:
+        _om = _phone_re.search(online["value"])
+        _pm = _phone_re.search(phone["value"])
+        if _om and _pm and _om.group(0) == _pm.group(0):
+            phone = None
     snippets = []
     for item in [online, phone]:
         if item is None:
@@ -270,9 +311,8 @@ def _next_step_contacts(contacts):
             snippets.append(f"Apply online: {_clean_url(url_m.group(0))} (checked {d:%b} {d.day}).")
         else:
             sentence = _first_sentence(item["value"])
-            # Strip the trailing period so "(checked Mon D)." never follows a period
-            if sentence.endswith("."):
-                sentence = sentence[:-1]
+            # PR #13 fix 1: strip only true sentence-ending periods; keep a.m./p.m. intact.
+            sentence = _strip_trailing_period(sentence)
             snippets.append(f"{sentence} (checked {d:%b} {d.day}).")
     return snippets
 
@@ -287,12 +327,12 @@ def _subcat(match, needs):
 
 TEMPLATES = {
     #                        title                          offers                                         next step                                                                                                     why it is ordered here
-    "food_pantry":           ("Visit a local food pantry", "offers free food in your area", "Check the posted hours and visit during an open time.", "Food is running low, and a pantry is usually the fastest way to get food."),
-    "calfresh_benefits":     ("Check food benefits", "provides ongoing help buying food", "Contact the provider or apply through the official site. They decide eligibility based on your household.", "Food is running low this week, and benefits take time, so starting now helps."),
+    "food_pantry":           ("Visit a local food pantry", "offers free food in your area", "Check the posted hours and visit during an open time.", "A pantry is usually the fastest way to get food."),
+    "calfresh_benefits":     ("Check food benefits", "provides ongoing help buying food", "Contact the provider or apply through the official site. They decide eligibility based on your household.", "Benefits take time to process, so starting now helps."),
     "unemployment_insurance":("Apply for unemployment benefits", "can replace part of lost wages after a layoff", "Start the online application. Have your last employer's details and last day worked ready.", "Income replacement supports your other needs, and payments take time to start, so file early."),
-    "rental_assistance":     ("Ask about rent help", "offers help with rent in Sacramento", "Contact the provider to confirm requirements and whether assistance is currently available.", "Your rent date is close, so contacting this program early gives the most time."),
-    "eviction_prevention":   ("Ask about help to stay in your home", "helps tenants at risk of losing their housing", "Contact the provider to ask what help is available and what documents to bring, such as any notice from your landlord.", "Acting before a housing deadline gives you the most options."),
-    "emergency_shelter":     ("Ask about emergency housing", "connects people to emergency shelter and housing help", "Contact the provider to ask about current openings and how to get connected.", "A safe place to stay comes first if your housing is at risk."),
+    "rental_assistance":     ("Ask about rent help", "offers help with rent in Sacramento", "Contact the provider to confirm requirements and whether assistance is currently available.", "Contacting this program early gives the most time to arrange help."),
+    "eviction_prevention":   ("Ask about help to stay in your home", "helps tenants at risk of losing their housing", "Contact the provider to ask what help is available and what documents to bring, such as any notice from your landlord.", "Getting this contact early gives you the most options."),
+    "emergency_shelter":     ("Ask about emergency housing", "connects people to emergency shelter and housing help", "Contact the provider to ask about current openings and how to get connected.", "Ask about current openings; availability changes and is not guaranteed."),
     "motel_voucher":         ("Ask about a short-term motel stay", "may offer short-term motel stays in some situations", "Contact the provider to ask whether motel help is available and who can get it.", "Short-term housing can bridge the gap while other help starts."),
     "housing_legal_aid":     ("Get free legal advice about your housing", "offers legal help with housing problems", "Contact the provider to ask for advice about your housing situation.", "Legal advice early can protect your options."),
     "cash_aid":              ("Ask about cash aid", "may provide cash help for families with children", "Contact the county or apply through the official site. They decide eligibility based on your household.", "Cash help can cover basics while other income is restored."),
@@ -333,70 +373,384 @@ def _uncertainty(match, p):
 
 # ================================================================ Agent 6: prioritization
 
+_FAR_DATE = "9999-99-99"  # sentinel for missing dates in sort keys
+
+# Housing subcategories that must sort before food/income actions when the case
+# shows a confirmed late legal stage (§15.2 rule 3).
+_HOUSING_SUBS = {"rental_assistance", "eviction_prevention", "emergency_shelter",
+                 "motel_voucher", "housing_legal_aid"}
+
+# Subcategories appropriate for a confirmed late-stage housing emergency
+# (§15.2 rule 3): emergency shelter + legal help first, NOT rental assistance.
+_LATE_STAGE_HOUSING_SUBS = {"emergency_shelter", "motel_voucher", "housing_legal_aid"}
+
+# Keywords in eviction_notice_type free text that indicate a confirmed late legal stage.
+# Agent 2 collects this as free text from: "What type of eviction notice did you receive,
+# and what date is on it?"
+# Note: "notice to vacate" is intentionally omitted — a "30-day notice to vacate" is an
+# early-stage notice.  "Sheriff's notice to vacate" is covered by "sheriff".
+_LATE_STAGE_KEYWORDS = (
+    "sheriff", "writ", "lockout",
+    "judgment", "unlawful detainer",
+)
+
+# Keywords in a housing need's description / urgency_reason that signal the user
+# is displaced right now with nowhere safe to stay tonight.
+_DISPLACED_NOW_KEYWORDS = (
+    "nowhere to stay", "nowhere safe to stay", "locked out", "no place to stay",
+    "sleeping outside", "on the street",
+)
+
+
+# Month-name patterns used by _parse_date_from_text.
+_MONTH_NAMES = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+# Matches "Nov 11", "November 11", "Nov. 11", "11/11", "2026-11-11".
+_DATE_IN_TEXT_RE = re.compile(
+    r"""
+    (?:
+        (?P<mon>[A-Za-z]{3,9})\.?\s+(?P<day>\d{1,2})   # "Nov 11" / "November 11"
+    |   (?P<m2>\d{1,2})/(?P<d2>\d{1,2})                # "11/11"
+    |   (?P<iso>\d{4}-\d{2}-\d{2})                     # "2026-11-11"
+    )
+    """,
+    re.VERBOSE,
+)
+
+
+def _parse_date_from_text(text, ref_date_str):
+    """Extract the first date-like token from *text* and return an ISO date string,
+    or None if no date is found.  Uses the year from ref_date_str; if the parsed
+    date falls before ref_date, the year is advanced by 1 (TD 20.5 H3).
+    """
+    if not text or not ref_date_str:
+        return None
+    try:
+        ref = datetime.strptime(ref_date_str, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    m = _DATE_IN_TEXT_RE.search(str(text))
+    if not m:
+        return None
+    try:
+        if m.group("iso"):
+            from datetime import date as _date
+            return str(datetime.strptime(m.group("iso"), "%Y-%m-%d").date())
+        if m.group("mon"):
+            mon_str = m.group("mon")[:3].lower()
+            mon_num = _MONTH_NAMES.get(mon_str)
+            if not mon_num:
+                return None
+            day = int(m.group("day"))
+            year = ref.year
+        else:
+            mon_num = int(m.group("m2"))
+            day = int(m.group("d2"))
+            year = ref.year
+        from datetime import date as _date
+        parsed = _date(year, mon_num, day)
+        if parsed < ref:            # date already passed → assume next year
+            parsed = _date(year + 1, mon_num, day)
+        return parsed.isoformat()
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def _eviction_notice_type_is_late_stage(notice_type_value):
+    """Return True when the eviction_notice_type free-text contains a late-stage keyword."""
+    if not notice_type_value:
+        return False
+    t = str(notice_type_value).lower()
+    return any(kw in t for kw in _LATE_STAGE_KEYWORDS)
+
+
+def _confirmed_late_legal_stage(facts, needs_dict=None):
+    """Return True when the case shows a confirmed late legal stage, using ONLY:
+    - eviction_notice_type free text (sheriff, writ, lockout, judgment, etc.)
+    - a housing need's description / urgency_reason mentioning displacement tonight.
+    Does NOT rely on invented fact field names (§15.2 follow-up).
+    """
+    notice_type = (facts.get("eviction_notice_type") or {}).get("value")
+    if _eviction_notice_type_is_late_stage(notice_type):
+        return True
+    # "displaced now" signal from the housing need itself (not a separate fact field).
+    if needs_dict:
+        for need in needs_dict.values():
+            if need.get("category") != "housing_assistance":
+                continue
+            for text_field in ("description", "urgency_reason", "original_quote"):
+                txt = str(need.get(text_field) or "").lower()
+                if any(kw in txt for kw in _DISPLACED_NOW_KEYWORDS):
+                    return True
+    return False
+
+
+def _eviction_notice_unknown_stage(facts):
+    """Return True when has_written_eviction_notice is True but eviction_notice_type
+    is absent or empty.  §15.2 rule 2: raise EVICTION_STAGE_UNKNOWN only in this case.
+    If eviction_notice_type is present (any value), the stage is at least partially
+    known — do not raise the issue.
+    """
+    notice_exists_val = (facts.get("has_written_eviction_notice") or {}).get("value")
+    notice_exists = bool(notice_exists_val) and str(notice_exists_val).lower() not in (
+        "false", "no", "0", "none", "")
+    if not notice_exists:
+        return False
+    notice_type = (facts.get("eviction_notice_type") or {}).get("value")
+    # If eviction_notice_type is present (non-empty), the type is known → no issue.
+    return not (notice_type and str(notice_type).strip())
+
+
+def _immediate_housing_threat(facts, ref_date_str, needs_dict=None):
+    """Return True ONLY when the case shows a confirmed late legal stage (§15.2 rule 3).
+
+    Detection uses only real fact fields:
+    - eviction_notice_type free text (sheriff, writ, lockout, judgment, etc.)
+    - housing need description/urgency_reason mentioning displacement tonight.
+
+    Rules (§15.2):
+    1. Confirmed late legal stage via eviction_notice_type text → True.
+    2. Eviction notice with no eviction_notice_type → False (EVICTION_STAGE_UNKNOWN issued).
+    3. Overdue rent and rent due today → False. Rent never places housing above food.
+    4. Utility shutoff notice alone → False.
+    """
+    try:
+        datetime.strptime(ref_date_str, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return False  # no ref_date → cannot make overdue decision
+
+    return _confirmed_late_legal_stage(facts, needs_dict)
+
+
+def _sort_key_6(action, housing_first, action_sub=None, action_rent_date=None):
+    """Sort key for Agent 6 actions (A6-03 + C-OD2).
+
+    Primary: order_group (first < parallel < later).
+    Within group: housing sub before non-housing ONLY when housing_first is True.
+    Then: earliest official_deadline, user_target_date (cross-need), processing_time.
+    action_sub is the {action_id -> subcategory} lookup (internal; not in action dict).
+    action_rent_date is the set of action_ids whose user_target_date came solely from
+    rent_due_date (§15.2 rule 4): those dates must not drive cross-need ordering.
+    """
+    g = GROUP_ORDER[action["order_group"]]
+    dl = action.get("official_deadline") or _FAR_DATE
+    aid = action.get("action_id")
+    # Exclude rent_due_date from the cross-need sort key (§15.2 item 3 follow-up).
+    if action_rent_date and aid in action_rent_date:
+        ud = _FAR_DATE
+    else:
+        ud = action.get("user_target_date") or _FAR_DATE
+    sub = (action_sub or {}).get(aid, "")
+    is_non_housing = (0 if sub in _HOUSING_SUBS else 1) if housing_first else 0
+    has_pt = 0 if action.get("estimated_processing_time") else 1
+    return (g, is_non_housing, dl, ud, has_pt)
+
+
+def _parse_processing_days(proc_time_str):
+    """Parse a processing-time string into calendar days (PR #13 fix 10).
+
+    Understands "30 days", "4 weeks", "2 months" (1 month ≈ 30 days).
+    Falls back to treating the number as days when no unit is given.
+    """
+    s = str(proc_time_str).lower()
+    m = re.search(r"(\d+)\s*(day|week|month|wk)", s)
+    if not m:
+        # bare number → days
+        m2 = re.search(r"(\d+)", s)
+        return int(m2.group(1)) if m2 else None
+    n = int(m.group(1))
+    unit = m.group(2)
+    if unit.startswith("week") or unit == "wk":
+        return n * 7
+    if unit.startswith("month"):
+        return n * 30
+    return n  # days
+
+
 def agent_6(request):
     """Order actions by urgency, deadlines, dependencies and parallel work. No numeric formula (P6 rules)."""
     p = request["payload"]
     needs = {n["need_id"]: n for n in p["needs"]}
     facts = _facts(request, p)
     claims = p.get("checked_claims", [])
+    # PR #13 fix 4: read ref_date from payload; never use datetime.now() for date comparisons.
+    ref_date_str = p.get("ref_date") or ""
+    issues_out = []
+    ref_date_ok = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", ref_date_str))
+    if not ref_date_ok:
+        issues_out.append(_issue("MISSING_REF_DATE", "warning",
+                                 "ref_date is missing or not an ISO date; overdue/time-left decisions are skipped."))
+    # §15.2 rule 2 (follow-up): raise EVICTION_STAGE_UNKNOWN only when
+    # has_written_eviction_notice is True AND eviction_notice_type is absent.
+    # If eviction_notice_type is present (any value), the type is known — no issue.
+    if _eviction_notice_unknown_stage(facts):
+        issues_out.append(_issue(
+            "EVICTION_STAGE_UNKNOWN", "warning",
+            "An eviction notice exists but the notice type is not recorded. "
+            "Please clarify: notice type (pay-or-quit, 3-day, 30-day, etc.), "
+            "date on the notice, whether a court case has been filed, "
+            "and whether a court judgment or sheriff notice has been received. "
+            "Housing is ordered as a normal need until the stage is confirmed.",
+        ))
     actions = []
 
     def add(**kw):
-        a = {"action_id": f"act_{len(actions) + 1:02d}", "need_id": None, "program_id": None, "suggested_priority": None,
+        # A6-01: contract 4.6 allows only need_id (singular); no need_ids field.
+        # PR #13 fix 3: strip any key starting with "_" so internal keys never leak.
+        a = {"action_id": f"act_{len(actions) + 1:02d}", "need_id": None,
+             "program_id": None, "suggested_priority": None,
              "order_group": "parallel", "rationale": "", "dependency_ids": [], "official_deadline": None,
              "user_target_date": None, "estimated_processing_time": None, "evidence_refs": [],
              "uncertainty_notes": [], "user_override_allowed": True}
         a.update(kw)
+        # Strip internal keys (e.g. _subcategory) — they must not appear in output.
+        for k in [k for k in a if k.startswith("_")]:
+            del a[k]
         actions.append(a)
         return a
 
-    app_ids = []
+    # Keep _subcategory only in a parallel lookup so _sort_key_6 can still use it.
+    _action_sub = {}   # action_id -> subcategory (internal only)
+    _action_rent_date = set()  # action_ids whose user_target_date came from rent_due_date only
+
     for m in p["matches"]:
         if m["match_status"] == "confirmed_mismatch":
             continue  # never recommended
-        need = needs[m["need_ids"][0]]
         sub = _subcat(m, needs)
-        why = TEMPLATES.get(sub, DEFAULT)[3]
-        group = {"immediate": "first", "high": "parallel", "unknown": "parallel"}.get(need["urgency"], "later")
-        timing = _timing(p, m["program_id"])
-        user_date = timing.get("user_target_date")
-        if not user_date and need["category"] == "housing_assistance" and "rent_due_date" in facts:
-            user_date = facts["rent_due_date"]["value"]  # the user's own date, never an official deadline
-        if user_date:
-            why += f" You told us your date is {_fmt_date(user_date)} (your date, not a program deadline)."
         dl = _deadline_info(m["program_id"], claims)
-        dependency = []
-        if dl and dl["status"] == "conflicting":
-            dates = " and ".join(_fmt_date(d) for d in dl["dates"])
-            closed = _availability(p).get(m["program_id"]) == "temporarily_closed"
-            confirm = add(need_id=need["need_id"], program_id=m["program_id"], order_group="later" if closed else "first",
-                          rationale=f"Official sources disagree on the application deadline ({dates}). Confirm which one applies before applying.",
-                          evidence_refs=[r for c in _deadline_claims(m["program_id"], claims) for r in c["evidence_refs"]],
-                          uncertainty_notes=[f"Official sources give different deadlines: {dates}. Confirm with the provider which one applies."]
-                          + (["This program is temporarily closed right now. Confirm the deadline when it reopens."] if closed else []))
-            dependency = [confirm["action_id"]]
-        notes = _uncertainty(m, p)
-        refs = list(m["evidence_refs"])
-        if _availability(p).get(m["program_id"]) == "temporarily_closed":
-            group = "later"  # never presented as current help (contract 4.6)
-            reopen, ev = _reopen_date(p, m["program_id"])
-            if reopen:
-                after = f", after your {_short_date(user_date)} date" if user_date and reopen > user_date else ""
-                why = f"Temporarily closed. Reopens {_short_date(reopen)}{after}. Use an open option first."
-                notes.append(f"This program is temporarily closed and reopens {_fmt_date(reopen)}{after}.")
-                refs.append(ev)
+        timing = _timing(p, m["program_id"])
+        proc_time = timing.get("estimated_processing_time")
+
+        # A6-01: one action per need_id when the match covers multiple needs.
+        for need_id in m["need_ids"]:
+            need = needs[need_id]
+            # PR #13 fix 7: urgency wording only when urgency is "immediate".
+            base_why = TEMPLATES.get(sub, DEFAULT)[3]
+            group = {"immediate": "first", "high": "parallel", "unknown": "parallel"}.get(need["urgency"], "later")
+            # §15.2 rule 5: user_priority must NOT change order_group or urgency.
+            # user_preference is kept separate from action ordering.
+            user_date = timing.get("user_target_date")
+            # §15.2 follow-up item 3: restore rent_due_date as user_target_date on the housing
+            # action so it appears on the card as the user's own date.  Mark the action in
+            # _action_rent_date so the sort key ignores it for cross-need ordering.
+            _from_rent_date = False
+            _from_notice_date = False
+            if (not user_date and need["category"] == "housing_assistance"
+                    and "rent_due_date" in facts):
+                user_date = facts["rent_due_date"]["value"]
+                _from_rent_date = True
+            # TD 20.5 H3: if eviction_notice_type contains a date (e.g. "sheriff lockout Nov 11"),
+            # use it as user_target_date on housing actions (user-stated date, never official_deadline).
+            # Only applied when no other date source is present.
+            if (not user_date and need["category"] == "housing_assistance" and ref_date_ok):
+                _notice_type_val = (facts.get("eviction_notice_type") or {}).get("value")
+                _parsed_notice_date = _parse_date_from_text(_notice_type_val, ref_date_str)
+                if _parsed_notice_date:
+                    user_date = _parsed_notice_date
+                    _from_notice_date = True
+            # A6-04: only append date wording when a real date exists.
+            # PR #13 fix 9: do not repeat the date — include it once (in the deadline sentence below).
+            # PR #13 fix 7: prefix urgency phrase for food/pantry/calfresh only when immediate.
+            # §15.2 follow-up item 4: no "Acting before a housing deadline" when no housing date.
+            if need.get("urgency") == "immediate" and sub in ("food_pantry", "calfresh_benefits"):
+                urgency_prefix = "Food is running low. "
             else:
-                why = "Temporarily closed. No reopening date is published. Use an open option first."
-                notes.append("This program is temporarily closed. No reopening date was found; check with the provider later.")
-        a = add(need_id=need["need_id"], program_id=m["program_id"], order_group=group, rationale=why,
-                dependency_ids=dependency,
-                official_deadline=dl["value"] if dl and dl["status"] == "verified" else None,
-                user_target_date=user_date, estimated_processing_time=timing.get("estimated_processing_time"),
-                evidence_refs=refs, uncertainty_notes=notes)
-        if sub in ("calfresh_benefits", "unemployment_insurance"):
-            app_ids.append(a["action_id"])
-    if app_ids:
-        add(order_group="later", rationale="This depends on the applications above being submitted first.", dependency_ids=app_ids)
+                urgency_prefix = ""
+            why = urgency_prefix + base_why
+            dependency = []
+            if dl and dl["status"] == "conflicting":
+                # A6-02: build a readable date list; handle empty dates (when claim_value was None).
+                if dl["dates"]:
+                    dates_str = " and ".join(_fmt_date(d) for d in dl["dates"])
+                    conflict_note = f"Official sources give different deadlines: {dates_str}. Confirm with the provider which one applies."
+                    rationale_text = f"Official sources disagree on the application deadline ({dates_str}). Confirm which one applies before applying."
+                else:
+                    conflict_note = "The published deadline is unknown. Confirm the deadline with the provider before applying."
+                    rationale_text = "The published deadline is unknown. Confirm the deadline with the provider before applying."
+                closed = _availability(p).get(m["program_id"]) == "temporarily_closed"
+                confirm = add(need_id=need_id, program_id=m["program_id"],
+                              order_group="later" if closed else "first",
+                              rationale=rationale_text,
+                              evidence_refs=[r for c in _deadline_claims(m["program_id"], claims) for r in c["evidence_refs"]],
+                              uncertainty_notes=[conflict_note]
+                              + (["This program is temporarily closed right now. Confirm the deadline when it reopens."] if closed else []))
+                _action_sub[confirm["action_id"]] = sub
+                dependency = [confirm["action_id"]]
+            notes = _uncertainty(m, p)
+            refs = list(m["evidence_refs"])
+            if _availability(p).get(m["program_id"]) == "temporarily_closed":
+                group = "later"  # never presented as current help (contract 4.6)
+                reopen, ev = _reopen_date(p, m["program_id"])
+                # PR #13 fix 12 (A6-05): "Use an open option first" only when an open option
+                # actually exists for this need.
+                has_open_for_need = any(
+                    om["program_id"] != m["program_id"]
+                    and need_id in om["need_ids"]
+                    and _availability(p).get(om["program_id"]) != "temporarily_closed"
+                    and om["match_status"] != "confirmed_mismatch"
+                    for om in p["matches"]
+                )
+                open_suffix = " Use an open option first." if has_open_for_need else ""
+                if reopen:
+                    after = f", after your {_short_date(user_date)} date" if user_date and reopen > user_date else ""
+                    why = f"Temporarily closed. Reopens {_short_date(reopen)}{after}.{open_suffix}"
+                    notes.append(f"This program is temporarily closed and reopens {_fmt_date(reopen)}{after}.")
+                    refs.append(ev)
+                else:
+                    why = f"Temporarily closed. No reopening date is published.{open_suffix}"
+                    notes.append("This program is temporarily closed. No reopening date was found; check with the provider later.")
+            # A6-03: if processing_time is longer than time left before target_date, say so.
+            # PR #13 fix 4: only when ref_date is known. Fix 10: parse unit properly.
+            if proc_time and user_date and ref_date_ok:
+                try:
+                    days_left = (datetime.strptime(user_date, "%Y-%m-%d") -
+                                 datetime.strptime(ref_date_str, "%Y-%m-%d")).days
+                    pt_days = _parse_processing_days(proc_time)
+                    if pt_days is not None and pt_days > days_left:
+                        notes.append(
+                            f"The estimated processing time ({proc_time}) may be longer than the time before your "
+                            f"target date ({_fmt_date(user_date)}). Starting as early as possible is important, "
+                            f"but the provider decides timing and this estimate is not a guarantee."
+                        )
+                except (ValueError, TypeError):
+                    pass
+            # A6-03: include deadline in rationale when it drives ordering.
+            # PR #13 fix 9: include user_date in rationale only if not already mentioned above.
+            # §15.2 follow-up item 4: use neutral wording; only add the date phrase when the
+            # date came from timing (a real user deadline), not from rent_due_date.
+            if dl and dl["status"] == "verified":
+                why += f" The official deadline is {_fmt_date(dl['value'])}."
+            elif user_date and not dl and not _from_rent_date and not _from_notice_date:
+                # Date is from timing — include it once in the rationale.
+                why += f" Acting before your date of {_fmt_date(user_date)} gives the most time."
+            elif user_date and not dl and _from_rent_date:
+                # rent_due_date shown as user's date on the card, but not as a deadline phrase.
+                # Use "was due" when the date is strictly before ref_date (overdue).
+                try:
+                    _rent_overdue = (ref_date_ok and user_date < ref_date_str)
+                except TypeError:
+                    _rent_overdue = False
+                if _rent_overdue:
+                    why += f" Your rent was due {_fmt_date(user_date)}."
+                else:
+                    why += f" Your rent is due {_fmt_date(user_date)}."
+            elif user_date and not dl and _from_notice_date:
+                # TD 20.5 H3: date parsed from eviction_notice_type — mention once as user-stated date.
+                why += f" The date you gave is {_fmt_date(user_date)}."
+            a = add(need_id=need_id, program_id=m["program_id"],
+                    order_group=group, rationale=why,
+                    dependency_ids=dependency,
+                    official_deadline=dl["value"] if dl and dl["status"] == "verified" else None,
+                    user_target_date=user_date, estimated_processing_time=proc_time,
+                    evidence_refs=refs, uncertainty_notes=notes)
+            _action_sub[a["action_id"]] = sub
+            if _from_rent_date or _from_notice_date:
+                _action_rent_date.add(a["action_id"])
+            # PR #13 fix 8: remove the generic "Follow up" action (program_id None).
+            # No longer track app_ids; we do NOT add a follow-up action.
+    # PR #13 fix 8: the generic "Follow up on your applications" action is removed.
     # an open program for the same need as a closed one goes first
     avail = _availability(p)
     closed_needs = {a["need_id"] for a in actions if a["program_id"] and avail.get(a["program_id"]) == "temporarily_closed"}
@@ -404,15 +758,39 @@ def agent_6(request):
         if a["need_id"] in closed_needs and a["program_id"] and avail.get(a["program_id"]) != "temporarily_closed" and not a["dependency_ids"]:
             a["order_group"] = "first"
             a["rationale"] += " This is the open option for this need while another program is closed."
-    actions.sort(key=lambda a: GROUP_ORDER[a["order_group"]])
+    # §15.2 rule 3: housing goes first only on a confirmed late legal stage.
+    housing_first = _immediate_housing_threat(facts, ref_date_str, needs) if ref_date_ok else False
+    # §15.2 rule 3 (continued): when housing_first is True:
+    # - replace neutral emergency_shelter rationale with the "comes first" wording.
+    # - append a not-guaranteed note to every late-stage housing sub.
+    # When housing_first is False the neutral wording stays (shelter match on undated notice etc.).
+    _SHELTER_NEUTRAL = "Ask about current openings; availability changes and is not guaranteed."
+    _SHELTER_URGENT  = "A safe place to stay comes first if your housing is at risk."
+    for a in actions:
+        sub_a = _action_sub.get(a.get("action_id"), "")
+        if sub_a == "emergency_shelter":
+            if housing_first:
+                a["rationale"] = a["rationale"].replace(_SHELTER_NEUTRAL, _SHELTER_URGENT)
+                if "not guaranteed" not in " ".join(a.get("uncertainty_notes") or []):
+                    a["uncertainty_notes"] = list(a.get("uncertainty_notes") or []) + [
+                        "Help from this program is not guaranteed. Contact them directly to confirm current availability."
+                    ]
+            # else: neutral wording stays as-is
+        elif sub_a in _LATE_STAGE_HOUSING_SUBS and housing_first:
+            if "not guaranteed" not in " ".join(a.get("uncertainty_notes") or []):
+                a["uncertainty_notes"] = list(a.get("uncertainty_notes") or []) + [
+                    "Help from this program is not guaranteed. Contact them directly to confirm current availability."
+                ]
+    actions.sort(key=lambda a: _sort_key_6(a, housing_first, _action_sub, _action_rent_date))
     group_counters = {}
     for a in actions:
         g = a["order_group"]
         group_counters[g] = group_counters.get(g, 0) + 1
         a["suggested_priority"] = group_counters[g]
+    # A6-01: coverage uses each action's own need_id (one per action).
     covered = {a["need_id"] for a in actions}
-    issues = [_issue("COVERAGE_GAP", "warning", f"No action found for {n}", n) for n in needs if n not in covered]
-    return _envelope(request, "completed", {"proposed_actions": actions}, issues)
+    issues_out += [_issue("COVERAGE_GAP", "warning", f"No action found for {n}", n) for n in needs if n not in covered]
+    return _envelope(request, "completed", {"proposed_actions": actions}, issues_out)
 
 # ================================================================ Agent 8: plan builder
 
@@ -426,10 +804,32 @@ def agent_8(request):
     id_map = {a["action_id"]: f"card_{i:02d}" for i, a in enumerate(acts, 1)}
     # build a set of (program_id, avail) to know which programs are open (for D/A8-03)
     avail_map = _availability(p)
-    cards = []
+
+    # A6-01: multiple actions for the same program_id (one per need_id, from agent_6)
+    # must be merged into a single card.  Group by (program_id, is_confirm) so that
+    # confirm-deadline actions remain separate from the regular application action.
+    def _is_confirm(a):
+        r = a.get("rationale", "")
+        return r.startswith("Official sources disagree") or r.startswith("The published deadline is unknown")
+
+    # Build ordered list of (program_id, is_confirm) keys without duplicates to
+    # preserve the sorted order that agent_6 produced.
+    seen_groups = {}  # (pid, is_confirm) -> first action index in merged_acts
+    merged_acts = []  # list of lists: each inner list is the group to merge
     for a in acts:
+        key = (a.get("program_id"), _is_confirm(a))
+        if key not in seen_groups:
+            seen_groups[key] = len(merged_acts)
+            merged_acts.append([a])
+        else:
+            merged_acts[seen_groups[key]].append(a)
+
+    cards = []
+    for group in merged_acts:
+        # Representative action: first in the group (already in sorted order).
+        a = group[0]
         m = matches.get(a["program_id"])
-        is_confirm = a["rationale"].startswith("Official sources disagree")
+        is_confirm = _is_confirm(a)
         if m and is_confirm:
             title, reason = "Confirm the application deadline", "The program's published deadline is not clear."
             next_step = "Call or check with the provider which deadline applies."
@@ -467,25 +867,35 @@ def agent_8(request):
                     next_step = candidate
             if contacts:
                 all_refs = [r for item in contacts for r in item["evidence_refs"]]
-                a = dict(a, evidence_refs=list(dict.fromkeys(a["evidence_refs"] + all_refs)))
+                merged_refs = list(dict.fromkeys(
+                    [r for x in group for r in x["evidence_refs"]] + all_refs))
+                a = dict(a, evidence_refs=merged_refs)
         else:
             contacts = []
         if not m:
-            title, reason = "Follow up on your applications", "Checking in helps you catch any requests for more information."
-            next_step = "After applying, watch for letters or messages and respond to any requests for documents."
-        # B/A8-01: related_need_ids uses action's own need_id; fall back to match's need_ids only when null
-        if m:
-            if a.get("need_id") is not None:
-                related = [a["need_id"]]
-            else:
-                related = m["need_ids"]
-        else:
-            related = sorted({x["need_id"] for x in acts if x["action_id"] in a["dependency_ids"]})
+            # PR #13 fix 8: skip generic "Follow up" cards (program_id None).
+            continue
+        # A6-01: related_need_ids = all need_ids from the merged group (deduplicated, ordered).
+        # B/A8-01: fall back to match's need_ids when action need_id is null.
+        # Collect need_id from each action in the group; filter out None.
+        group_need_ids = list(dict.fromkeys(
+            x["need_id"] for x in group if x.get("need_id") is not None))
+        related = group_need_ids if group_need_ids else m["need_ids"]
+        # Merge evidence refs across the whole group.
+        merged_ev = list(dict.fromkeys(r for x in group for r in x["evidence_refs"]))
+        source_action_ids = [x["action_id"] for x in group]
+        # PR #13 fix 11: merge uncertainty_notes from all actions in the group.
+        merged_notes = list(dict.fromkeys(n for x in group for n in x.get("uncertainty_notes", [])))
+        # card_id is keyed by the first action in the group.
         cards.append({
-            "card_id": id_map[a["action_id"]], "source_action_ids": [a["action_id"]], "related_need_ids": related, "program_id": a["program_id"],
-            "action_title": title, "reason": reason, "next_step": next_step, "priority_reason": a["rationale"],
-            "order_group": a["order_group"], "dependency_card_ids": [id_map[d] for d in a["dependency_ids"]],
-            "source_refs": a["evidence_refs"], "uncertainty_notes": a["uncertainty_notes"],
+            "card_id": id_map[a["action_id"]], "source_action_ids": source_action_ids,
+            "related_need_ids": related, "program_id": a["program_id"],
+            "action_title": title, "reason": reason, "next_step": next_step,
+            "priority_reason": a["rationale"],
+            "order_group": a["order_group"],
+            "dependency_card_ids": [id_map[d] for d in a["dependency_ids"] if d in id_map],
+            "source_refs": a.get("evidence_refs", merged_ev),
+            "uncertainty_notes": merged_notes,
             "official_deadline": a["official_deadline"], "user_target_date": a["user_target_date"],
             "processing_estimate": a["estimated_processing_time"], "progress_status": "not_started",
             "contacts": contacts,
@@ -554,6 +964,8 @@ def agent_7(request):
     known = {m["program_id"] for m in matches}
     need_of = {m["program_id"]: m["need_ids"][0] for m in matches}
     claims = sr.get("checked_claims", [])
+    # A7-02: track whether evidence_records was provided (even if empty).
+    ev_records_provided = "evidence_records" in p
     ev_ids = {e["evidence_id"] for e in p.get("evidence_records", [])}
     conflict_groups = {}
     for c in claims:
@@ -561,13 +973,20 @@ def agent_7(request):
         crit = fp.startswith(CRITICAL_FIELDS)
         if known and pid not in known:
             add("Q6", "critical", pid, "Claim references a program that is not in the matches", "recheck_source", fp)
-        if c["verification_status"] == "verified" and (not c.get("evidence_refs") or (ev_ids and not set(c["evidence_refs"]) <= ev_ids)):
+        # A7-02: an empty evidence_records list is never a pass — any evidence_ref must be in the list.
+        if c["verification_status"] == "verified" and (
+            not c.get("evidence_refs")
+            or (ev_records_provided and not set(c["evidence_refs"]) <= ev_ids)
+        ):
             add("Q1", "critical" if crit else "warning", pid, "Verified claim has no resolvable evidence", "omit_unsupported_claim", fp)
         if c["verification_status"] == "conflicting":
             conflict_groups.setdefault((pid, fp), []).append(c)
     for (pid, fp), group in conflict_groups.items():
         values = {str(c.get("claim_value")) for c in group if c.get("claim_value") is not None}
-        if len(values) < 2 and not any(re.search(r"\bvs\b|\d{4}-\d{2}-\d{2}.*\d{4}-\d{2}-\d{2}", str(c.get("claim_value"))) for c in group):
+        # A7-03: claim_value=None in a conflict group means the value is genuinely unknown/missing;
+        # treat the group as a real conflict (Q2), never as "only one value" (Q3).
+        has_none_value = any(c.get("claim_value") is None for c in group)
+        if not has_none_value and len(values) < 2 and not any(re.search(r"\bvs\b|\d{4}-\d{2}-\d{2}.*\d{4}-\d{2}-\d{2}", str(c.get("claim_value"))) for c in group):
             add("Q3", "warning", pid, f"{fp} is labeled conflicting but only one published value exists (missing information is unknown, not conflicting)",
                 "recheck_source", fp, [r for c in group for r in c["evidence_refs"]], need_of.get(pid))
             continue
@@ -619,8 +1038,12 @@ def agent_7(request):
         elif age > window:
             add("Q7", "warning", pid, f"Evidence is {age} day(s) old, older than the {window}-day window", "recheck_source", fp)
     covered = {n for m in matches for n in m["need_ids"]}
+    # A7-01: fire Q8 whenever the stage_result has a "matches" key (even when it is empty),
+    # because the stage was expected to produce matches.  Do NOT fire when the key is absent
+    # (e.g. an external-discovery-only stage that has no matches at all).
+    has_matches_key = "matches" in sr
     for n in p.get("needs", []):
-        if matches and n["need_id"] not in covered:
+        if has_matches_key and n["need_id"] not in covered:
             add("Q8", "warning", None, f"Need {n['need_id']} has no candidate or coverage gap", "report_coverage_gap", need=n["need_id"])
     real = [f for f in findings if f["severity"] != "info"]  # info findings (evidence age) do not change the assessment
     result = {"stage": p["stage"], "stage_assessment": "issues_found" if real else "clear", "findings": findings}
@@ -725,6 +1148,24 @@ def agent_10(request):
     for opt in plan.get("potential_options", []):
         if not opt.get("official_link") or not opt.get("what_needs_checking"):
             flag(None, "V11", f"Potential option {opt.get('program_id')} lacks an official link or what needs checking", "Add both.")
+    # PR #13 fix 11 (Agent 10): flag any dependency_card_ids pointing to a card that does not exist.
+    existing_card_ids = {c["card_id"] for c in cards}
+    for c in cards:
+        for dep_id in c.get("dependency_card_ids", []):
+            if dep_id not in existing_card_ids:
+                flag(c["card_id"], "V12",
+                     f"dependency_card_ids references card {dep_id} which does not exist in this plan",
+                     "Remove the stale dependency or add the missing card.")
+    # A10-02: each card's related_need_ids must only contain needs that the original match actually covers.
+    for c in cards:
+        pid = c.get("program_id")
+        if pid and pid in matches:
+            valid_need_ids = set(matches[pid]["need_ids"])
+            for rn in c.get("related_need_ids", []):
+                if rn not in valid_need_ids:
+                    flag(c["card_id"], "V12",
+                         f"Card related_need_ids contains {rn} which is not in the match's need_ids for {pid}",
+                         "Set related_need_ids only to the needs the program actually matched.")
     covered = {n for c in cards for n in c.get("related_need_ids", [])} | {g["need_id"] for g in plan.get("coverage_gaps", [])}
     for n in p["needs"]:
         if n["need_id"] not in covered:

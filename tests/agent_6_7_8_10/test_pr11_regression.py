@@ -256,14 +256,16 @@ class TestPR11Regression(unittest.TestCase):
                 f"CalFresh contacts[] contains 'EBT Customer Service' row: {item['value']!r}",
             )
 
-    # C-R9: no next_step for the 4 KB programs contains ". (checked"
+    # C-R9: no next_step for the 4 KB programs contains ".. (checked" (double period).
+    # Single period before (checked is valid when the preceding text ends with an
+    # abbreviation like "a.m." or "p.m." — those must not be stripped (PR #13 item 1).
     def test_C_R9_no_double_period_before_checked(self):
         for pid, card in self.cards.items():
             ns = card["next_step"]
             self.assertNotIn(
-                ". (checked",
+                ".. (checked",
                 ns,
-                f"next_step for {pid} contains '. (checked' (double period): {ns!r}",
+                f"next_step for {pid} contains '.. (checked' (double period): {ns!r}",
             )
 
 
