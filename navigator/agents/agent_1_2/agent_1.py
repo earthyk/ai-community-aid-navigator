@@ -152,8 +152,9 @@ RE_JOB_LOSS = re.compile(
 )
 
 RE_TRIGGERING_EVENT = re.compile(
-r"\b(lost\s+(?:my\s+)?job|laid\s+off|was\s+laid\s+off|unemployed|fired|"
+    r"\b(?:lost\s+(?:my\s+)?job|laid\s+off|was\s+laid\s+off|unemployed|fired|"
     r"hours?\s+cut|cut\s+(?:my\s+)?hours?|reduced\s+hours?|pay\s+cut|"
+    r"hours\s+(?:were|got|are|have\s+been)\s+cut|cut\s+(?:my|our)?\s*hours|"
     r"let\s+go\s+from|medical\s+emergency|hospitalization|hospital\s+bill|illness|accident|injury|hospital|"
     r"rent\s+increase|unexpected\s+bill|passed\s+away|passed|died|death\s+of|"
     r"lost\s+my\s+(?:husband|wife|partner|spouse)|sole\s+earner|divorce|"
@@ -735,8 +736,9 @@ def _understand_story(
         story_lower,
     ))
     has_eviction_threat = bool(RE_EVICTION_THREAT.search(story))
+    has_housing_keyword = bool(re.search(r"\bhousing\b", story_lower))
     has_rent_need = (
-        ("rent" in story_lower or has_eviction or rent_is_explicitly_past or has_motel or has_eviction_threat)
+        ("rent" in story_lower or has_housing_keyword or has_eviction or rent_is_explicitly_past or has_motel or has_eviction_threat)
         and "apartment fire" not in story_lower
     )
 
@@ -788,13 +790,17 @@ def _understand_story(
         summary += "."
 
     # 13. Ambiguity: unspecified hardship cause
-    ambiguity_flags: List[str] = []
+    ambiguity_flags: List[Any] = []
     has_aid_need = bool(
         re.search(r"\b(food|groceries|eat|hungry|pantry|rent|housing|shelter|homeless|income|money|financial|afford)\b", story_lower)
     )
     has_root_cause = bool(RE_TRIGGERING_EVENT.search(story))
     if has_aid_need and not has_root_cause:
-        ambiguity_flags.append("unspecified_hardship_cause")
+        ambiguity_flags.append({
+            "field": "triggering_circumstances",
+            "quote": story_raw,
+            "note": "unspecified_hardship_cause",
+        })
 
     env["result"] = {
         "narrative_summary": summary,
@@ -868,7 +874,11 @@ def _parse_clarification(payload: Dict[str, Any], env: Dict[str, Any]) -> Dict[s
     # 2. Triggering Circumstances
     if "triggering_circumstances" in keys:
         circumstance_val = None
-        if re.search(r"\b(hours?\s+cut|cut\s+(?:my\s+)?hours?|reduced\s+hours?|pay\s+cut)\b", ans_lower):
+        if re.search(
+            r"\b(?:hours?\s+cut|cut\s+(?:my\s+)?hours?|reduced\s+hours?|pay\s+cut|"
+            r"hours\s+(?:were|got|are|have\s+been)\s+cut|cut\s+(?:my|our)?\s*hours)\b",
+            ans_lower,
+        ):
             circumstance_val = "reduced_hours"
         elif re.search(r"\b(laid\s+off|lost\s+(?:my\s+)?job|fired|unemployed)\b", ans_lower):
             circumstance_val = "job_loss"
@@ -887,30 +897,27 @@ def _parse_clarification(payload: Dict[str, Any], env: Dict[str, Any]) -> Dict[s
                 "time_context": "recent",
             })
 
-    # 3. Monthly Income Parsing (Guarded against rent/bills/arrears)
+    # 3. Monthly Income Parsing (Guarded against rent/bills/arrears and bare ZIP codes)
     if "household_gross_monthly_income" in keys:
         is_rent_or_due = bool(re.search(r"\b(rent|due|bill|owe|owing|left|account|balance)\b", ans_lower))
 
-        inc_m = RE_INCOME_STANDARD.search(ans) or RE_INCOME_BENEFIT.search(ans)
-        if inc_m and not is_rent_or_due:
-            try:
-                val = int(inc_m.group(1).replace(",", ""))
-                facts.append({
-                    "fact_id": _fact_id("household_gross_monthly_income", len(facts) + 1),
-                    "field": "household_gross_monthly_income",
-                    "value": val,
-                    "confirmation_status": "proposed",
-                    "source": "user_statement",
-                    "time_context": "current",
-                })
-            except ValueError:
-                pass
-        elif not is_rent_or_due:
-            num_m = re.search(r"^\$?([0-9,]+)$|\b(?:about|around)\s+\$?([0-9,]+)\b", ans_lower)
-            if num_m:
-                raw_num = num_m.group(1) or num_m.group(2)
+        # Income Sanity Guard: bare 5-digit string starting with 9 → treat as ZIP code, not income
+        bare_zip_m = re.match(r"^\s*\$?(9\d{4})\s*$", ans.strip())
+        if bare_zip_m:
+            facts.append({
+                "fact_id": _fact_id("zip_code", len(facts) + 1),
+                "field": "zip_code",
+                "value": bare_zip_m.group(1),
+                "confirmation_status": "proposed",
+                "source": "user_statement",
+                "time_context": None,
+            })
+            # Do NOT set household_gross_monthly_income — fall through to next section
+        else:
+            inc_m = RE_INCOME_STANDARD.search(ans) or RE_INCOME_BENEFIT.search(ans)
+            if inc_m and not is_rent_or_due:
                 try:
-                    val = int(raw_num.replace(",", ""))
+                    val = int(inc_m.group(1).replace(",", ""))
                     facts.append({
                         "fact_id": _fact_id("household_gross_monthly_income", len(facts) + 1),
                         "field": "household_gross_monthly_income",
@@ -921,6 +928,22 @@ def _parse_clarification(payload: Dict[str, Any], env: Dict[str, Any]) -> Dict[s
                     })
                 except ValueError:
                     pass
+            elif not is_rent_or_due:
+                num_m = re.search(r"^\$?([0-9,]+)$|\b(?:about|around)\s+\$?([0-9,]+)\b", ans_lower)
+                if num_m:
+                    raw_num = num_m.group(1) or num_m.group(2)
+                    try:
+                        val = int(raw_num.replace(",", ""))
+                        facts.append({
+                            "fact_id": _fact_id("household_gross_monthly_income", len(facts) + 1),
+                            "field": "household_gross_monthly_income",
+                            "value": val,
+                            "confirmation_status": "proposed",
+                            "source": "user_statement",
+                            "time_context": "current",
+                        })
+                    except ValueError:
+                        pass
 
     # 3b. ZIP Code Parsing
     if "zip_code" in keys:

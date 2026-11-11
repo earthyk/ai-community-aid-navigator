@@ -63,8 +63,8 @@ class TestAgent2(unittest.TestCase):
         self.assertFalse(res["clarification_requests"][0]["can_skip"])
 
     def test_unspecified_hardship_circumstance_clarification(self):
-        """Multi-turn: vague story → Agent 1 flags unspecified_hardship_cause →
-        Agent 2 asks for circumstances first, NOT income."""
+        """Multi-turn: vague story → Agent 1 flags unspecified_hardship_cause (as object) →
+        Agent 2 asks for circumstances first (Turn 1), NOT income."""
         story = (
             "Hi, I need help with food and rent. "
             "I'm having financial problems and I'm worried about how my family will get through next month."
@@ -80,7 +80,12 @@ class TestAgent2(unittest.TestCase):
         a1_res = handle_agent_1(a1_req)
         self.assertEqual(a1_res["status"], "completed")
         ambiguity_flags = a1_res["result"]["ambiguity_flags"]
-        self.assertIn("unspecified_hardship_cause", ambiguity_flags)
+        # Contract 4.1: ambiguity_flags is now an array of objects
+        af_notes = [
+            (f["note"] if isinstance(f, dict) else f)
+            for f in ambiguity_flags
+        ]
+        self.assertIn("unspecified_hardship_cause", af_notes)
 
         a2_req = {
             "request_id": "req-a2-circ",
@@ -110,6 +115,46 @@ class TestAgent2(unittest.TestCase):
 
         asked_keys = [r["fact_key"] for r in a2_res["clarification_requests"]]
         self.assertNotIn("household_gross_monthly_income", asked_keys)
+
+    def test_zip_asked_after_circumstances_on_turn_2(self):
+        """ZIP fallthrough: once triggering_circumstances is in already_asked,
+        Agent 2 on Turn 2 must ask for zip_code (not halt), clamped to <= 2 questions."""
+        # Simulate what Agent 1 produces for the vague story
+        vague_story = (
+            "Hi, I need help with food and rent. "
+            "I'm having financial problems and I'm worried about how my family will get through next month."
+        )
+        a1_req = {
+            "request_id": "req-a1-zip-turn2",
+            "run_id": "run-0001",
+            "case_id": "case-zip-turn2",
+            "case_version": 1,
+            "task_type": "understand_story",
+            "payload": {"story_text": vague_story},
+        }
+        a1_res = handle_agent_1(a1_req)
+        ambiguity_flags = a1_res["result"]["ambiguity_flags"]
+
+        # Turn 2: triggering_circumstances was already asked on Turn 1
+        a2_req = {
+            "request_id": "req-a2-zip-turn2",
+            "run_id": "run-0001",
+            "case_id": "case-zip-turn2",
+            "case_version": 2,
+            "task_type": "clarify_case",
+            "payload": {
+                "needs": a1_res["result"]["proposed_needs"],
+                "case_facts": a1_res["result"]["factual_claims"],
+                "already_asked": ["triggering_circumstances"],
+                "candidate_requirements": [],
+                "ambiguity_flags": ambiguity_flags,
+            },
+        }
+        a2_res = handle_agent_2(a2_req)
+        asked_keys = [r["fact_key"] for r in a2_res["clarification_requests"]]
+        self.assertIn("zip_code", asked_keys, "Expected zip_code to be asked after triggering_circumstances")
+        # Pacing ceiling: never more than 2 questions per turn
+        self.assertLessEqual(len(a2_res["clarification_requests"]), 2)
 
 
     def test_missing_zip_code_question_generated_on_turn_1(self):

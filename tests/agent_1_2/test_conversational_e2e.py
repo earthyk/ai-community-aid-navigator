@@ -46,7 +46,11 @@ class TestConversationalEndToEnd(unittest.TestCase):
         self.assertIn("food_assistance", need_categories)
         self.assertIn("housing_assistance", need_categories)
         self.assertEqual(len(res_1.get("triggering_events", [])), 0)
-        self.assertIn("unspecified_hardship_cause", res_1.get("ambiguity_flags", []))
+        af_notes = [
+            (f["note"] if isinstance(f, dict) else f)
+            for f in res_1.get("ambiguity_flags", [])
+        ]
+        self.assertIn("unspecified_hardship_cause", af_notes)
 
         req_2 = {
             "request_id": "req-t1-a2",

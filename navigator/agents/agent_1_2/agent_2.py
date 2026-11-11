@@ -59,7 +59,17 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     case_facts: List[Dict[str, Any]] = payload.get("case_facts") or []
     raw_already_asked = payload.get("already_asked") or []
     candidate_requirements: List[Dict[str, Any]] = payload.get("candidate_requirements") or []
-    ambiguity_flags: List[str] = payload.get("ambiguity_flags") or []
+    raw_ambiguity_flags: List[Any] = payload.get("ambiguity_flags") or []
+
+    # Normalize ambiguity_flags: support both Contract 4.1 objects and legacy strings
+    ambiguity_flag_notes: Set[str] = set()
+    for af in raw_ambiguity_flags:
+        if isinstance(af, str):
+            ambiguity_flag_notes.add(af.strip())
+        elif isinstance(af, dict):
+            note = af.get("note")
+            if note:
+                ambiguity_flag_notes.add(str(note).strip())
 
     # 1. Normalize already_asked (Gate 2)
     already_asked_keys: Set[str] = set()
@@ -93,7 +103,7 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
         already_asked_keys.add("employment_status")
 
     # Step 1 — Circumstance-First Gate: ask about root cause before anything else
-    unspecified_hardship = "unspecified_hardship_cause" in ambiguity_flags
+    unspecified_hardship = "unspecified_hardship_cause" in ambiguity_flag_notes
     circumstances_already_asked = "triggering_circumstances" in already_asked_keys
     circumstances_in_facts = "triggering_circumstances" in known_keys
 
@@ -133,10 +143,11 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             "is_mock": True,
         }
 
-    # 2. ZIP Code Question (Item 2) — Turn 1 only: ask when zip_code is not known, not already asked,
+    # 2. ZIP Code Question — ask when zip_code is not known, not already asked,
     #    there is at least one service need, no unspecified_hardship gate is active,
     #    and no urgent eviction follow-up is displacing the turn.
-    #    "Turn 1" is identified by an empty already_asked list (raw, before backward-compat expansion).
+    #    On Turn 1 (empty already_asked): ask unconditionally.
+    #    After Turn 1: ask when circumstances were already asked (ZIP fallthrough).
     has_zip_fact = "zip_code" in known_keys
     zip_already_asked = "zip_code" in already_asked_keys
     notice_is_reported_early = known_facts.get("has_written_eviction_notice") is True
@@ -146,14 +157,18 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
         and ("eviction_notice_type" not in known_keys)
     )
     is_turn_1 = len(raw_already_asked) == 0
+    # ZIP fallthrough: after Turn 1 only when unspecified_hardship_cause is still active
+    # (caller passes the original flags) AND circumstances have been asked/resolved.
+    circumstances_resolved = circumstances_already_asked or circumstances_in_facts
+    zip_fallthrough = unspecified_hardship and circumstances_resolved
 
     if (
         not has_zip_fact
         and not zip_already_asked
-        and not unspecified_hardship
         and needs  # only when there is an actual service need
         and not eviction_followup_pending
-        and is_turn_1  # only ask on the first turn (§ Item 2)
+        and (is_turn_1 or zip_fallthrough)  # Turn 1 or post-circumstances fallthrough
+        and not (unspecified_hardship and not circumstances_resolved)  # never when hardship gate is active
     ):
         if len(clarification_requests) < 2:
             clarification_requests.append({

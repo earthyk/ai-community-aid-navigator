@@ -194,6 +194,73 @@ class TestAgent1(unittest.TestCase):
         self.assertEqual(needs[0]["subcategory"], "emergency_shelter")
         self.assertEqual(needs[0]["urgency"], "immediate")
 
+    def test_housing_and_food_both_detected(self):
+        """Housing Need Regex + Contract 4.1: 'housing and food' produces both needs,
+        ambiguity_flags is an array of objects with field/quote/note."""
+        req = {
+            "request_id": "req-hf-1",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {"story_text": "I have problems with housing and food. I need help."},
+        }
+        res = handle_agent_1(req)
+        self.assertEqual(res["status"], "completed")
+        categories = [n["category"] for n in res["result"]["proposed_needs"]]
+        self.assertIn("housing_assistance", categories)
+        self.assertIn("food_assistance", categories)
+        # Contract 4.1: ambiguity_flags must be an array of objects
+        af = res["result"]["ambiguity_flags"]
+        self.assertIsInstance(af, list)
+        self.assertGreater(len(af), 0)
+        self.assertIsInstance(af[0], dict)
+        self.assertIn("field", af[0])
+        self.assertIn("quote", af[0])
+        self.assertIn("note", af[0])
+        self.assertEqual(af[0]["note"], "unspecified_hardship_cause")
+
+    def test_passive_hours_cut_clears_unspecified_hardship(self):
+        """Passive hours-cut phrasing ('My hours were cut at work') must be recognized
+        as a root cause, so unspecified_hardship_cause is NOT flagged."""
+        req = {
+            "request_id": "req-hc-1",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {"story_text": "My hours were cut at work and I can't pay rent."},
+        }
+        res = handle_agent_1(req)
+        self.assertEqual(res["status"], "completed")
+        af_notes = [
+            (f["note"] if isinstance(f, dict) else f)
+            for f in res["result"]["ambiguity_flags"]
+        ]
+        self.assertNotIn("unspecified_hardship_cause", af_notes)
+
+    def test_zip_code_answer_during_income_clarification(self):
+        """Income Sanity Guard: answer '95660' when income is pending sets
+        zip_code='95660' and does NOT set household_gross_monthly_income."""
+        req = {
+            "request_id": "req-zip-income-1",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "parse_clarification_answer",
+            "payload": {
+                "answer_text": "95660",
+                "pending_fact_keys": ["household_gross_monthly_income"],
+            },
+        }
+        res = handle_agent_1(req)
+        facts = {f["field"]: f["value"] for f in res["result"]["factual_claims"]}
+        self.assertEqual(facts.get("zip_code"), "95660")
+        self.assertNotIn("household_gross_monthly_income", facts)
+
     def test_bad_input_handling(self):
         res_null = handle_agent_1({
             "request_id": "req-1", "run_id": "r-1", "case_id": "c-1", "case_version": 1,
