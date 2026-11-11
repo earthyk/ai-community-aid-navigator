@@ -1,4 +1,4 @@
-# Agents 3, 4, 5: Retrieval, Matching, Verification (owner: Silver) — v1.6
+# Agents 3, 4, 5: Retrieval, Matching, Verification (owner: Silver) — v1.7
 
 Shared JSON Contracts v1.1 (agent results still carry schema_version "1.0", as in v1.0); task_type retrieve_candidates / match_resources / verify_resources. Python 3.11+, standard library only.
 
@@ -10,7 +10,7 @@ Shared JSON Contracts v1.1 (agent results still carry schema_version "1.0", as i
 
 Each module exposes `handle(request: dict) -> dict` (AgentRequest in, AgentResult out). `is_mock` is `true` until the logic is final.
 
-**Run the tests** (from repo root): `python -m unittest discover tests -v` (30 tests)
+**Run the tests** (from repo root): `python -I -m unittest discover -s tests -t .`
 **Regenerate samples:** `python navigator/samples/agent_3_4_5/make_samples.py`
 **Rebuild / check the KB:** `python navigator/kb/tools/build_kb.py` then `python navigator/kb/tools/validate_kb.py`
 **Review spreadsheet (optional):** `python navigator/kb/tools/make_sheet.py out.xlsx` needs `openpyxl`; it is not needed to run the agents.

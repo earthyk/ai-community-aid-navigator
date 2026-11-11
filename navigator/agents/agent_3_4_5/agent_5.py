@@ -29,7 +29,7 @@ def handle(request, kb_path=None):
                                 "issue": "No published value on file; left empty, not guessed."})
                 # Julia's review 5.1: missing evidence is also an unresolved question, not only a quiet status
                 unresolved.append(f"{pid} {fp}: no evidence on file - confirm with the program.")
-                issues.append(issue("EVIDENCE_MISSING", "warning", f"{fp} has no evidence on file", fp))
+                issues.append(issue("EVIDENCE_MISSING", "warning", f"{pid}: no evidence for {fp}", pid))
                 continue
             groups = {}
             for e in rows:

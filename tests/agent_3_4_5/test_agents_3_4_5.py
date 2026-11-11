@@ -310,5 +310,38 @@ class T9_AuditFixes(unittest.TestCase):
         self.assertIn("EVIDENCE_MISSING", {i["code"] for i in out["issues"]})
 
 
+class T10_EvidenceMissingNamesProgram(unittest.TestCase):
+    """EVIDENCE_MISSING issues must name the program they belong to (related_ref and message)."""
+
+    def _run5(self, kb, pids_and_fields):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(kb, f)
+        try:
+            return agent_5.handle(req("agent_5", "verify_resources",
+                                      {"programs_to_check": [{"program_id": pid, "field_paths": fields}
+                                                              for pid, fields in pids_and_fields]}),
+                                  kb_path=f.name)
+        finally:
+            os.unlink(f.name)
+
+    def test_each_evidence_missing_names_its_own_program(self):
+        """Two programs, both missing 'deadlines' evidence: each EVIDENCE_MISSING issue names its own program."""
+        kb = {
+            "program_records": [
+                {"program_id": "prog_fix_010"},
+                {"program_id": "prog_fix_011"},
+            ],
+            "evidence_records": [],
+        }
+        out = self._run5(kb, [("prog_fix_010", ["deadlines"]), ("prog_fix_011", ["deadlines"])])
+        em_issues = [i for i in out["issues"] if i["code"] == "EVIDENCE_MISSING"]
+        self.assertEqual(len(em_issues), 2, f"Expected 2 EVIDENCE_MISSING issues, got {len(em_issues)}")
+        refs = {i["related_ref"] for i in em_issues}
+        self.assertEqual(refs, {"prog_fix_010", "prog_fix_011"})
+        for i in em_issues:
+            self.assertIn(i["related_ref"], i["message"],
+                          f"program_id '{i['related_ref']}' must appear in message: {i['message']!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
