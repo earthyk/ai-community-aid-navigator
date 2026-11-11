@@ -16,4 +16,4 @@ We store short facts with links to the official pages; we do not copy page conte
 | www.sacramentostepsforward.org | Sacramento Steps Forward (Continuum of Care lead agency) | Coordinated Access (2-1-1 press 8): eligibility, documents for financial help, phone numbers, hours; HHAP prevention funding note | Not found | unclear | 2026-11-06 |
 | www.211sacramento.org | 2-1-1 Sacramento | Text-your-ZIP and chat contact channel | Not found | unclear | 2026-11-06 |
 
-**For the team:** 5 of the 8 owners have no confirmed terms page or no re-use statement. We only store short factual items (eligibility rules, phone numbers, hours, how to apply) with a link back to the source, and we don't copy page text, images or design. Decision needed: is that enough for the submission, or do we ask these owners for permission?
+**For the team:** 6 of the 8 owners have no confirmed terms page or no re-use statement. We only store short factual items (eligibility rules, phone numbers, hours, how to apply) with a link back to the source, and we don't copy page text, images or design. Decision needed: is that enough for the submission, or do we ask these owners for permission?
