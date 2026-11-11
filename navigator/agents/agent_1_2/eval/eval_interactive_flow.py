@@ -16,18 +16,27 @@ from navigator.agents.agent_1_2.agent_1 import handle_agent_1
 from navigator.agents.agent_1_2.agent_2 import handle_agent_2
 
 SCENARIOS = {
+    "Julia_housing_and_food": [
+        "I have problems with housing and food. I need help.",
+        "My hours were cut at work last month and I couldn't pay rent.",
+        "My ZIP code is 95823 and our gross income is about $800 a month.",
+        "There are 3 people in our household."
+    ],
     "A_unspecified_hardship": [
         "Hi, I need help with food and rent. I'm having financial problems and I'm worried about how my family will get through next month.",
         "My company cut my hours from 40 to 15 hours a week starting two weeks ago, so my paycheck dropped drastically.",
-        "Yes, our monthly rent is $1,350 and I have about $150 left in my account.",
+        "We are in 95823. Our monthly income is $900.",
+        "Our monthly rent is $1,350 and I have about $150 left in my account.",
+        "There are 3 people in our family."
     ],
     "B_urgent_eviction": [
         "My landlord gave me a 3-day notice to pay or quit yesterday and threatened to lock us out if we don't leave.",
-        "The notice date is November 6, 2026, and the amount due is $1,600.",
+        "We live in 95823 and our income is $1,000. The notice date is November 6, 2026, and the amount due is $1,600."
     ],
     "C_unexpected_medical_expense": [
         "I was doing okay until my daughter had an emergency asthma hospitalization last week, and now the hospital bill took all my rent money.",
-        "Rent is $1,200 due on November 1st, and we have no groceries left for the kids.",
+        "Our ZIP is 95823 and income is $1,200. Rent is $1,200 due on November 1st, and we have no groceries left for the kids.",
+        "There are 3 people in our household."
     ]
 }
 
@@ -64,8 +73,14 @@ def run_simulation(scenario_name, user_turns):
 
         new_facts = a1_res.get("factual_claims", [])
         case_facts.extend(new_facts)
-        if a1_res.get("proposed_needs"):
-            needs = a1_res.get("proposed_needs")
+        
+        # Merge proposed needs cumulatively across turns
+        new_needs = a1_res.get("proposed_needs", [])
+        if new_needs:
+            for n in new_needs:
+                cat = n.get("category")
+                if not any(existing.get("category") == cat for existing in needs):
+                    needs.append(n)
 
         safety_flags = a1_res.get("safety_or_official_deadline_flags", [])
         ambiguity_flags = a1_res.get("ambiguity_flags", [])
@@ -75,7 +90,8 @@ def run_simulation(scenario_name, user_turns):
         safety_summary = [s.get("note") for s in safety_flags]
 
         print("\nAgent 1 Findings:")
-        print(f"  • Proposed Needs: {needs_summary}")
+        for n in needs:
+            print(f"  • Proposed Need: {n.get('category')} (Urgency: {n.get('urgency')}, Reason: \"{n.get('urgency_reason')}\")")
         print(f"  • Triggering Events: {a1_res.get('triggering_events', [])}")
         print(f"  • Ambiguity Flags: {ambiguity_flags}")
         print(f"  • Safety Flags: {safety_summary}")

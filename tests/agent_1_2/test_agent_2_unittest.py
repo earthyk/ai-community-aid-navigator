@@ -223,6 +223,70 @@ class TestAgent2(unittest.TestCase):
         # Pacing ceiling: never more than 2 questions per turn
         self.assertLessEqual(len(res["clarification_requests"]), 2)
 
+    def test_zip_asked_on_turn_2_without_hardship_flag(self):
+        """Defect fix: ZIP must be asked on Turn 2 even when no unspecified_hardship flag
+        is present — unconditional prompting regardless of hardship flags."""
+        req = {
+            "request_id": "req-zip-turn2-nohardship",
+            "run_id": "run-001",
+            "case_id": "case-zip-t2",
+            "case_version": 2,
+            "schema_version": "1.0",
+            "role_id": "agent_2",
+            "task_type": "clarify_case",
+            "payload": {
+                "needs": [{"need_id": "need_001", "category": "housing_assistance"}],
+                "case_facts": [
+                    {"field": "employment_status", "value": "laid_off"},
+                    {"field": "household_gross_monthly_income", "value": 1200},
+                ],
+                # already_asked is non-empty (not Turn 1) but no zip yet
+                "already_asked": ["triggering_circumstances"],
+                "candidate_requirements": [],
+                # No unspecified_hardship flag
+                "ambiguity_flags": [],
+            },
+        }
+        res = handle_agent_2(req)
+        asked_keys = [r["fact_key"] for r in res["clarification_requests"]]
+        self.assertIn(
+            "zip_code", asked_keys,
+            "Expected zip_code to be asked on Turn 2 even without hardship flag",
+        )
+        zip_q = next(r for r in res["clarification_requests"] if r["fact_key"] == "zip_code")
+        self.assertFalse(zip_q["can_skip"])
+
+    def test_eviction_notice_type_not_reasked_when_in_case_facts(self):
+        """Defect fix: if eviction_notice_type is already in case_facts,
+        Agent 2 must NOT generate a clarification request for it."""
+        req = {
+            "request_id": "req-evict-no-reask",
+            "run_id": "run-001",
+            "case_id": "case-evict-skip",
+            "case_version": 2,
+            "schema_version": "1.0",
+            "role_id": "agent_2",
+            "task_type": "clarify_case",
+            "payload": {
+                "needs": [{"need_id": "need_001", "category": "housing_assistance"}],
+                "case_facts": [
+                    {"field": "zip_code", "value": "95823"},
+                    {"field": "has_written_eviction_notice", "value": True},
+                    {"field": "eviction_notice_type", "value": "3_day_pay_or_quit"},
+                    {"field": "household_gross_monthly_income", "value": 1500},
+                ],
+                "already_asked": ["zip_code"],
+                "candidate_requirements": [],
+                "ambiguity_flags": [],
+            },
+        }
+        res = handle_agent_2(req)
+        asked_keys = [r["fact_key"] for r in res["clarification_requests"]]
+        self.assertNotIn(
+            "eviction_notice_type", asked_keys,
+            "eviction_notice_type should not be re-asked when already in case_facts",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

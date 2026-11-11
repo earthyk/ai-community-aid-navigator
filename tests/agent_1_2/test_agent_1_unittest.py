@@ -284,5 +284,77 @@ class TestAgent1(unittest.TestCase):
         self.assertEqual(res_bad_date["status"], "failed")
         self.assertEqual(res_bad_date["issues"][0]["code"], "INVALID_REF_DATE")
 
+    def test_3_day_notice_extracts_eviction_notice_type(self):
+        """Defect fix: '3-day notice to pay or quit' must extract both
+        has_written_eviction_notice=True and eviction_notice_type='3_day_pay_or_quit'."""
+        req = {
+            "request_id": "req-evict-type-1",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {
+                "story_text": (
+                    "My landlord gave me a 3-day notice to pay or quit yesterday "
+                    "and threatened to lock us out if we don't pay."
+                )
+            },
+        }
+        res = handle_agent_1(req)
+        facts = {f["field"]: f["value"] for f in res["result"]["factual_claims"]}
+        self.assertTrue(facts.get("has_written_eviction_notice"))
+        self.assertEqual(facts.get("eviction_notice_type"), "3_day_pay_or_quit")
+
+    def test_arrears_amount_not_rent_amount_monthly(self):
+        """Defect fix: 'the amount due is $1,600' in a clarification answer must extract
+        rent_arrears_amount and leave rent_amount_monthly untouched."""
+        req = {
+            "request_id": "req-arrears-1",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "parse_clarification_answer",
+            "payload": {
+                "answer_text": "The notice date is November 6, 2026, and the amount due is $1,600.",
+                "pending_fact_keys": ["eviction_notice_type"],
+            },
+        }
+        res = handle_agent_1(req)
+        facts = {f["field"]: f["value"] for f in res["result"]["factual_claims"]}
+        self.assertEqual(facts.get("rent_arrears_amount"), 1600)
+        self.assertNotIn("rent_amount_monthly", facts)
+
+    def test_clarification_food_keywords_add_food_assistance_need(self):
+        """Defect fix: clarification answer with 'groceries' / 'food' / 'hungry'
+        must append food_assistance to proposed_needs."""
+        for phrase in [
+            "we have no groceries left for the kids",
+            "we don't have food at home",
+            "the kids are hungry",
+        ]:
+            with self.subTest(phrase=phrase):
+                req = {
+                    "request_id": "req-food-claric",
+                    "run_id": "run-001",
+                    "case_id": "case-001",
+                    "case_version": 1,
+                    "role_id": "agent_1",
+                    "task_type": "parse_clarification_answer",
+                    "payload": {
+                        "answer_text": phrase,
+                        "pending_fact_keys": ["triggering_circumstances"],
+                    },
+                }
+                res = handle_agent_1(req)
+                needs = res["result"].get("proposed_needs", [])
+                cats = [n["category"] for n in needs]
+                self.assertIn(
+                    "food_assistance", cats,
+                    f"Expected food_assistance in proposed_needs for: {phrase}",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

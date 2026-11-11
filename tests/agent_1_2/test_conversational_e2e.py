@@ -120,9 +120,12 @@ class TestConversationalEndToEnd(unittest.TestCase):
         res_4 = handle_agent_2(req_4)
         clarifications_t2 = res_4.get("clarification_requests", [])
 
-        self.assertEqual(len(clarifications_t2), 1)
-        self.assertEqual(clarifications_t2[0]["fact_key"], "household_gross_monthly_income")
-        self.assertIn("gross monthly household income", clarifications_t2[0]["user_facing_question"].lower())
+        # After unconditional ZIP fix: both zip_code and income are asked on Turn 2
+        # (ZIP is missing and not asked; pacing ceiling allows up to 2 per turn)
+        asked_keys_t2 = [q["fact_key"] for q in clarifications_t2]
+        self.assertIn("zip_code", asked_keys_t2)
+        self.assertIn("household_gross_monthly_income", asked_keys_t2)
+        self.assertLessEqual(len(clarifications_t2), 2)
 
     def test_e2e_acute_eviction_urgency_flow(self):
         """
@@ -164,11 +167,14 @@ class TestConversationalEndToEnd(unittest.TestCase):
         res_a2 = handle_agent_2(req_a2)
         clarifications = res_a2.get("clarification_requests", [])
 
-        self.assertEqual(len(clarifications), 1)
-        self.assertEqual(clarifications[0]["fact_key"], "eviction_notice_type")
-        self.assertIn("what type of eviction notice", clarifications[0]["user_facing_question"].lower())
+        # After notice-type extraction fix: Agent 1 extracts eviction_notice_type="3_day_pay_or_quit"
+        # from story, so Agent 2 will NOT re-ask for it; instead asks for zip_code + income.
+        asked_keys = [q["fact_key"] for q in clarifications]
+        self.assertNotIn("eviction_notice_type", asked_keys)
+        self.assertIn("zip_code", asked_keys)
+        self.assertLessEqual(len(clarifications), 2)
 
-        # Turn 2: Notice details volunteered
+        # Turn 2: Notice date + amount due volunteered
         turn_2_input = "The notice date is November 6, 2026, and the amount due is $1,600."
         req_parse = {
             "request_id": "req-ev-03",
@@ -186,7 +192,9 @@ class TestConversationalEndToEnd(unittest.TestCase):
         parsed_facts = {f["field"]: f["value"] for f in res_parse.get("factual_claims", [])}
 
         self.assertEqual(parsed_facts.get("eviction_notice_date"), "2026-11-06")
-        self.assertEqual(parsed_facts.get("rent_amount_monthly"), 1600)
+        # After arrears fix: "amount due is $1,600" maps to rent_arrears_amount, not rent_amount_monthly
+        self.assertEqual(parsed_facts.get("rent_arrears_amount"), 1600)
+        self.assertNotIn("rent_amount_monthly", parsed_facts)
 
 
 if __name__ == "__main__":

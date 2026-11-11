@@ -143,11 +143,8 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             "is_mock": True,
         }
 
-    # 2. ZIP Code Question — ask when zip_code is not known, not already asked,
-    #    there is at least one service need, no unspecified_hardship gate is active,
-    #    and no urgent eviction follow-up is displacing the turn.
-    #    On Turn 1 (empty already_asked): ask unconditionally.
-    #    After Turn 1: ask when circumstances were already asked (ZIP fallthrough).
+    # 2. ZIP Code Question — ask whenever zip_code is not known and not already asked.
+    #    Unconditional: applies on every turn regardless of hardship flags.
     has_zip_fact = "zip_code" in known_keys
     zip_already_asked = "zip_code" in already_asked_keys
     notice_is_reported_early = known_facts.get("has_written_eviction_notice") is True
@@ -156,19 +153,13 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
         and ("eviction_notice_type" not in already_asked_keys)
         and ("eviction_notice_type" not in known_keys)
     )
-    is_turn_1 = len(raw_already_asked) == 0
-    # ZIP fallthrough: after Turn 1 only when unspecified_hardship_cause is still active
-    # (caller passes the original flags) AND circumstances have been asked/resolved.
     circumstances_resolved = circumstances_already_asked or circumstances_in_facts
-    zip_fallthrough = unspecified_hardship and circumstances_resolved
 
     if (
         not has_zip_fact
         and not zip_already_asked
-        and needs  # only when there is an actual service need
+        and needs  # only when there is at least one service need
         and not eviction_followup_pending
-        and (is_turn_1 or zip_fallthrough)  # Turn 1 or post-circumstances fallthrough
-        and not (unspecified_hardship and not circumstances_resolved)  # never when hardship gate is active
     ):
         if len(clarification_requests) < 2:
             clarification_requests.append({
@@ -186,14 +177,10 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             })
             seen_keys.add("zip_code")
 
-    # 3. Income Question — ask only when:
-    #    - income is not already known
-    #    - income has not been asked
-    #    - no candidate_requirements are pending
-    #    - circumstances are not flagged as unspecified
-    #    - no active eviction notice follow-up is being asked on this turn
+    # 3. Income Question — required (can_skip=False).
+    #    Re-ask once if it was asked before but remains unsettled in known_keys (Item 1).
     has_income_fact = "household_gross_monthly_income" in known_keys
-    income_already_asked = "household_gross_monthly_income" in already_asked_keys
+    income_ask_count = sum(1 for k in raw_already_asked if (k == "household_gross_monthly_income" or (isinstance(k, dict) and k.get("fact_key") == "household_gross_monthly_income")))
     notice_is_reported = known_facts.get("has_written_eviction_notice") is True
     eviction_followup_pending = (
         notice_is_reported
@@ -201,13 +188,15 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
         and ("eviction_notice_type" not in known_keys)
     )
 
-    if (
+    should_ask_income = (
         not has_income_fact
-        and not income_already_asked
+        and income_ask_count < 2
         and not candidate_requirements
         and not unspecified_hardship
         and not eviction_followup_pending
-    ):
+    )
+
+    if should_ask_income and len(clarification_requests) < 2:
         clarification_requests.append({
             "fact_key": "household_gross_monthly_income",
             "question_intent": "Determine current monthly household income",
@@ -319,14 +308,20 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
         isinstance(n, dict) and n.get("category") == "food_assistance" for n in needs
     )
 
-    if (
+    # Ask household_size if candidate requirements explicitly requested it,
+    # OR if food need is present and no other question was generated this turn (pacing).
+    should_ask_hh_size = (
         not has_hh_size_fact
         and not hh_size_already_asked
         and "household_size" not in seen_keys
-        and (cand_needs_hh_size or has_food_need_for_hh)
-        and has_income_fact  # income must already be known, not being asked this turn
-        and len(clarification_requests) == 0  # only when no other question was generated this turn
-    ):
+        and (
+            cand_needs_hh_size
+            or (has_food_need_for_hh and len(clarification_requests) == 0)
+        )
+        and len(clarification_requests) < 2
+    )
+
+    if should_ask_hh_size:
         clarification_requests.append({
             "fact_key": "household_size",
             "question_intent": "Determine total number of people in the household",
