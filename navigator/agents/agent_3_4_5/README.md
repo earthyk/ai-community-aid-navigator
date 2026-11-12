@@ -1,4 +1,4 @@
-# Agents 3, 4, 5: Retrieval, Matching, Verification (owner: Silver) — v1.7
+# Agents 3, 4, 5: Retrieval, Matching, Verification (owner: Silver) — v1.8
 
 Shared JSON Contracts v1.1 (agent results still carry schema_version "1.0", as in v1.0); task_type retrieve_candidates / match_resources / verify_resources. Python 3.11+, standard library only.
 
@@ -23,7 +23,7 @@ Each module exposes `handle(request: dict) -> dict` (AgentRequest in, AgentResul
 | prog_housing_saintjohns_sac_001 | housing_assistance / rental_assistance | confirmed_open (reopened Nov 2; online form via the page's APPLY HERE link) |
 | prog_housing_coordaccess_sac_001 | housing_assistance / eviction_prevention | confirmed_open (2-1-1 press 8 access route; help not guaranteed) |
 
-**Geography:** records use service areas ("Sacramento County"); statewide programs use "California" and cover all 58 California counties. The Supervisor passes ZIP and county; a ZIP-only request falls back to a local Sacramento ZIP stub.
+**Geography:** records use service areas ("Sacramento County"); statewide programs use "California" and cover all 58 California counties. The Supervisor passes ZIP and county; a ZIP-only request falls back to `navigator/kb/sacramento_county_zips.json` (61 ZIPs from the saccounty.gov county ZIP code map).
 
 **Input errors (Slav, Oct 25)** are reported as errors, never as gaps or incomplete data:
 | Issue code | When | Status |
@@ -43,6 +43,8 @@ Each module exposes `handle(request: dict) -> dict` (AgentRequest in, AgentResul
 - Agent 3: reports total found vs. returned and `CANDIDATES_TRUNCATED` (3.1); documented ordering (need order, subcategory match, then program_id); unknown location returns `GEOGRAPHY_UNRESOLVED`, never a coverage gap (3.2); malformed payloads return `failed` + `INPUT_INVALID` (3.3).
 - Agent 4: `supported_match` only when every criterion was evaluated; text eligibility criteria are not evaluated yet, so they are listed in `CRITERIA_NOT_EVALUATED` and the result stays `potential_match` (4.2). Income is requested only when the program's criteria mention income (4.3).
 - Agent 5: missing evidence is also an unresolved question + `EVIDENCE_MISSING` (5.1); dated statements from one page stay separate claims, with no combined "current" value (5.3).
+
+**Changes in v1.8 (Nov 12):** Agent 3 ZIP-only fallback now loads 61 Sacramento County ZIPs from `navigator/kb/sacramento_county_zips.json` (source: saccounty.gov county ZIP code map, checked 2026-11-11) instead of the hard-coded 95811–95838 range; warning message now names saccounty.gov.
 
 **Known limits:**
 - Criterion-based matching (Julia 4.1, 4.4) waits for structured criteria in contracts v1.2 (Slav's proposal: county/ZIP, household size, monthly income with is_approximate, employment status). Until then no program with eligibility criteria reaches `supported_match`.
