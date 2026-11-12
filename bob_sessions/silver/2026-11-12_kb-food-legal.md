@@ -75,7 +75,7 @@ Work in my Silverwork repo. Pull main, then create branch silver/kb-food-legal.
 
 
 
-> 🔧 **execute_command** — cd /Users/silverasanchez/Silverwork && git checkout main && git pull origin main
+> 🔧 **execute_command** — cd <Silverwork> && git checkout main && git pull origin main
 
 ### 🤖 Assistant
 
@@ -83,7 +83,7 @@ Work in my Silverwork repo. Pull main, then create branch silver/kb-food-legal.
 
 
 
-> 🔧 **list_files** — /Users/silverasanchez/Silverwork
+> 🔧 **list_files** — <Silverwork>
 
 ### 🤖 Assistant
 
@@ -91,7 +91,7 @@ Work in my Silverwork repo. Pull main, then create branch silver/kb-food-legal.
 
 
 
-> 🔧 **list_files** — /Users/silverasanchez/Silverwork/navigator
+> 🔧 **list_files** — <Silverwork>/navigator
 
 ### 🤖 Assistant
 
@@ -99,7 +99,7 @@ Work in my Silverwork repo. Pull main, then create branch silver/kb-food-legal.
 
 
 
-> 🔧 **list_files** — /Users/silverasanchez/Silverwork/navigator/kb
+> 🔧 **list_files** — <Silverwork>/navigator/kb
 
 ### 🤖 Assistant
 
@@ -135,7 +135,7 @@ The git repo is at `<repo>`. Let me explore the full structure.
 
 Now let me read the key files I need to work with:
 
-> 🔧 **read_file** — /Users/silverasanchez/Silverwork/navigator/kb/tools/records_nov12.py
+> 🔧 **read_file** — <Silverwork>/navigator/kb/tools/records_nov12.py
 
 > 🔧 **read_file** — <repo>/navigator/kb/tools/build_kb.py
 
@@ -230,7 +230,7 @@ Now I have all the information I need. Let me proceed with all the tasks. Let me
 
 Now copy the file and edit build_kb.py:
 
-> 🔧 **execute_command** — cp /Users/silverasanchez/Silverwork/navigator/kb/tools/records_nov12.py <repo>/navigator/kb/tools/records_nov12.py
+> 🔧 **execute_command** — cp <Silverwork>/navigator/kb/tools/records_nov12.py <repo>/navigator/kb/tools/records_nov12.py
 
 ### 🤖 Assistant
 
