@@ -93,11 +93,9 @@ for i in out4["issues"]:
         print(f"  [issue {i['severity']}] {i['code']}: {i['message'][:100]}")
 print()
 
-# ---- AGENT 5: verification (housing + food availability) -------------------
-housing_pids = [m["program_id"] for m in matches if "housing" in m["program_id"]]
-food_pids    = [m["program_id"] for m in matches if "food" in m["program_id"] or "calfresh" in m["program_id"]]
-check_programs = [{"program_id": pid, "field_paths": ["availability"]}
-                  for pid in (housing_pids + food_pids)[:6]]
+# ---- AGENT 5: verification (all 11 programs — availability) ----------------
+check_programs = [{"program_id": m["program_id"], "field_paths": ["availability"]}
+                  for m in matches]
 r5 = req("agent_5", "verify_resources",
          {"programs_to_check": check_programs, "evidence_refs": [], "relevant_case_constraints": []})
 out5 = agent_5.handle(r5)
