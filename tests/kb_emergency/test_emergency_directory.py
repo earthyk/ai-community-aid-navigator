@@ -7,10 +7,6 @@ import unittest
 
 PATH = os.path.join(os.path.dirname(__file__), "..", "..", "navigator", "kb", "emergency", "emergency_directory.json")
 
-# Subcategories that belong on the safety path (crisis resources shown in the safety notice).
-# local_police_non_emergency is intentionally absent: police contacts are plan-only.
-_SAFETY_NOTICE_SUBCATEGORIES = {"emergency_services", "mental_health_crisis", "domestic_violence_sexual_assault"}
-
 
 class EmergencyDirectoryTests(unittest.TestCase):
     @classmethod
@@ -55,44 +51,26 @@ class EmergencyDirectoryTests(unittest.TestCase):
 
     # --- PR #16 tests ---
 
-    def test_police_records_are_not_in_the_safety_notice(self):
-        """Police contacts (subcategory local_police_non_emergency) must not appear in the
-        safety-notice set. The safety notice shows only crisis subcategories."""
-        for r in self.d["program_records"]:
-            if r["subcategory"] == "local_police_non_emergency":
-                self.assertNotIn(
-                    r["subcategory"],
-                    _SAFETY_NOTICE_SUBCATEGORIES,
-                    f"{r['program_id']} has subcategory local_police_non_emergency "
-                    "but that would land it in the safety notice",
-                )
+    def test_police_records_have_correct_subcategory_and_category(self):
+        """Every er_police_* record must carry subcategory='local_police_non_emergency'
+        and category='emergency_crisis'.  The subcategory is the gate the safety path will
+        use to exclude police contacts from the safety notice; the category tells the
+        directory which section these records live in.
 
-    def test_lockout_story_does_not_produce_a_safety_flag(self):
-        """A lockout is a housing/property event; it must not be stored as a crisis resource
-        that triggers a safety flag. No record with 'lockout' in its name or program_id
-        should carry a safety-notice subcategory.
-        Police contacts (the right resource for a lockout) must not be crisis subcategories."""
-        lockout_ids = [
-            r["program_id"] for r in self.d["program_records"]
-            if "lockout" in r["program_id"].lower() or "lockout" in r["program_name"].lower()
-        ]
-        # No lockout record should exist; if one is ever added it must not be crisis.
-        for pid in lockout_ids:
-            r = next(p for p in self.d["program_records"] if p["program_id"] == pid)
-            self.assertNotIn(
-                r["subcategory"],
-                _SAFETY_NOTICE_SUBCATEGORIES,
-                f"{pid} is a lockout record but has a safety-notice subcategory",
+        Note: no safety-path code exists yet (planned v0.2.5).  When it ships, add a
+        runtime test that the safety-notice filter rejects local_police_non_emergency.
+        """
+        police = [r for r in self.d["program_records"]
+                  if r["program_id"].startswith("er_police_")]
+        self.assertGreater(len(police), 0, "Expected at least one er_police_* record")
+        for r in police:
+            self.assertEqual(
+                r["subcategory"], "local_police_non_emergency",
+                f"{r['program_id']} must have subcategory local_police_non_emergency",
             )
-        # Police contacts (which cover lockout calls) must not be crisis subcategories.
-        police_records = [r for r in self.d["program_records"]
-                         if r["subcategory"] == "local_police_non_emergency"]
-        self.assertGreater(len(police_records), 0, "Expected at least one local_police_non_emergency record")
-        for r in police_records:
-            self.assertNotIn(
-                r["subcategory"],
-                _SAFETY_NOTICE_SUBCATEGORIES,
-                f"{r['program_id']} is a police contact but has a safety-notice subcategory",
+            self.assertEqual(
+                r["category"], "emergency_crisis",
+                f"{r['program_id']} category must be emergency_crisis",
             )
 
     def test_fjc_hours_are_not_24_7(self):
