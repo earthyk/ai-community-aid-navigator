@@ -354,6 +354,44 @@ class TestAgent1(unittest.TestCase):
                     "food_assistance", cats,
                     f"Expected food_assistance in proposed_needs for: {phrase}",
                 )
+    def test_lockout_threat_is_housing_not_safety_flag(self):
+        req = {
+            "request_id": "req-lockout-threat",
+            "run_id": "run-001",
+            "case_id": "case-lockout-001",
+            "case_version": 1,
+            "schema_version": "1.0",
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {
+                "story_text": "My landlord threatened to lock us out",
+                "locale": "en-US",
+            },
+        }
+        res = handle_agent_1(req)
+        self.assertEqual(res["status"], "completed")
+        self.assertEqual(res["result"]["safety_or_official_deadline_flags"], [])
+        needs = res["result"]["proposed_needs"]
+        self.assertTrue(any(n["category"] == "housing_assistance" for n in needs))
+
+    def test_physical_harm_threat_still_raises_safety_flag(self):
+        req = {
+            "request_id": "req-harm-threat",
+            "run_id": "run-001",
+            "case_id": "case-harm-001",
+            "case_version": 1,
+            "schema_version": "1.0",
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {
+                "story_text": "My landlord threatened to hurt us",
+                "locale": "en-US",
+            },
+        }
+        res = handle_agent_1(req)
+        self.assertEqual(res["status"], "completed")
+        flags = res["result"]["safety_or_official_deadline_flags"]
+        self.assertTrue(any(f.get("type") == "safety" for f in flags))
 
 
 if __name__ == "__main__":

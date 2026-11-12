@@ -352,7 +352,7 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             need_updates.append({
                 "need_id": n.get("need_id"),
                 "urgency": "immediate",
-                "urgency_reason": "Immediate nutritional support needed for dependents within current week",
+                "urgency_reason": n.get("urgency_reason") or "Food assistance needed",
             })
 
     status = "needs_clarification" if len(clarification_requests) > 0 else "completed"

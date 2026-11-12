@@ -66,10 +66,15 @@ RE_EVICTION_AFFIRMATIVE = re.compile(
 
 # Eviction threat: landlord verbally threatened eviction (no written notice required)
 RE_EVICTION_THREAT = re.compile(
-r"\b(?:landlord|owner)\s+(?:said\s+)?(?:he\s+|she\s+|they\s+)?(?:will|threatened\s+to|plans\s+to|is\s+going\s+to)\s+(?:evict|lock\s+(?:us|me)\s+out)\b|"
-    r"\bthreatened\s+(?:us\s+|me\s+)?(?:with\s+eviction|to\s+lock\s+(?:us|me)\s+out)\b|"
-    r"\b(?:lock\s+(?:us|me)\s+out|locked\s+out)\b|"
+    r"\b(?:landlord|owner)\s+(?:said\s+)?(?:he\s+|she\s+|they\s+)?(?:will|threatened\s+to|plans\s+to|is\s+going\s+to)\s+(?:evict|lock\s+(?:us|me)\s+out|change\s+the\s+locks)\b|"
+    r"\bthreatened\s+(?:us\s+|me\s+)?(?:with\s+eviction|to\s+lock\s+(?:us|me)\s+out|to\s+change\s+the\s+locks)\b|"
+    r"\b(?:lock\s+(?:us|me)\s+out|locked\s+(?:us\s+|me\s+)?out|change\s+the\s+locks|changed\s+the\s+locks)\b|"
     r"\bfacing\s+eviction\b",
+    re.IGNORECASE,
+)
+
+RE_ACTUAL_LOCKOUT = re.compile(
+    r"\b(?:locked\s+(?:us|me)\s+out|changed\s+the\s+locks(?:\s+and\s+(?:we|i)\s+can'?t\s+get\s+in)?)\b",
     re.IGNORECASE,
 )
 
@@ -376,15 +381,7 @@ def _understand_story(
             "note": "Life-safety distress or domestic violence signal detected. Display emergency 988/DV hotlines immediately.",
         })
 
-    # Unlawful or imminent lockout threat flag
-    lockout_m = re.search(r"\b(threatened\s+to\s+lock\s+us\s+out|lock\s*out|locked\s+out)\b", story_lower)
-    if lockout_m:
-        flags.append({
-            "type": "safety",
-            "quote": extract_full_sentence_quote(r"lock\s*out", story),
-            "note": "imminent_or_unlawful_lockout_threat",
-        })
-
+    
     # 2. ZIP Code Extraction
     zip_m = re.search(r"\b(9\d{4})\b", story)
     if zip_m:
@@ -666,13 +663,18 @@ def _understand_story(
         story_lower,
     ):
         food_quote = extract_full_sentence_quote(r"food|groceries|eat|hungry|pantry", story)
+        food_reason = (
+            "Household running low on food or groceries"
+            if re.search(r"\b(groceries|low\s+on\s+food|run\s+out|hungry|eat|pantry)\b", story_lower)
+            else "Food problem reported"
+        )
         proposed_needs.append(_make_need(
             "food_assistance",
             need_idx,
             description="Household is running low on food or groceries",
             original_quote=food_quote,
             urgency="immediate",
-            urgency_reason="Nutritional support needed immediately",
+            urgency_reason=food_reason,
         ))
         need_idx += 1
 
@@ -772,16 +774,31 @@ def _understand_story(
         ))
         need_idx += 1
     elif has_rent_need:
-        housing_quote = extract_full_sentence_quote(r"rent|evict|motel", story)
-        if has_eviction or has_eviction_threat:
+        housing_quote = extract_full_sentence_quote(r"rent|evict|motel|lock|housing", story)
+        is_actual_lockout = bool(RE_ACTUAL_LOCKOUT.search(story))
+        has_lockout_threat = bool(re.search(r"\b(?:lock\s+(?:us|me)\s+out|change\s+the\s+locks)\b", story_lower))
+
+        if is_actual_lockout:
             urgency = "immediate"
-            reason = "Eviction notice reported" if has_eviction else "Eviction threatened by landlord"
+            reason = "Already locked out of home (late-stage housing emergency)"
+        elif has_eviction:
+            urgency = "immediate"
+            reason = "Eviction notice reported"
+        elif has_lockout_threat:
+            urgency = "immediate"
+            reason = "Landlord threatened lockout or lock change"
+        elif has_eviction_threat:
+            urgency = "immediate"
+            reason = "Eviction threatened by landlord"
         elif rent_is_explicitly_past or rent_overdue_by_date:
             urgency = "immediate"
             reason = "Rent is overdue"
+        elif "rent" in story_lower:
+            urgency = "high"
+            reason = "Rent assistance needed"
         else:
             urgency = "high"
-            reason = "Unable to pay rent or facing housing instability"
+            reason = "Housing problem reported"
 
         proposed_needs.append(_make_need(
             "housing_assistance",
