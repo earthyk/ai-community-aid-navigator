@@ -302,7 +302,7 @@ class T9_AuditFixes(unittest.TestCase):
         self.assertIn("CANDIDATES_TRUNCATED", {i["code"] for i in out["issues"]})
         # housing_assistance now has 4 programs (Nov 12); only 1 returned with max_candidates=1
         note = out["result"]["retrieval_notes"][0]
-        self.assertIn("candidate(s) found, 1 returned", note)
+        self.assertIn("4 candidate(s) found, 1 returned", note)
         self.assertIn("CANDIDATES_TRUNCATED", {i["code"] for i in out["issues"]})
 
     def test_3_2_unknown_geography_is_not_a_coverage_gap(self):
