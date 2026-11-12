@@ -203,10 +203,10 @@ class TestContractShapeAndBlocking(unittest.TestCase):
             self.assertEqual(facts["employment_status"], "laid_off")
 
     # -------------------------------------------------------------------
-    # BLOCKING ITEM 6 — Bereavement: employment_status + triggering_events
+    # BLOCKING ITEM 6 — Bereavement: life circumstance only (Slav Item 10)
     # -------------------------------------------------------------------
     def test_block_6_bereavement_emits_employment_status_and_triggering_event(self):
-        """Bereavement must emit employment_status + 'bereavement' in triggering_events."""
+        """Bereavement must emit 'bereavement' in triggering_events without fabricating employment_status."""
         story = (
             "My husband passed away last week. He was our sole earner and I need "
             "survivor benefits in 95823."
@@ -216,8 +216,7 @@ class TestContractShapeAndBlocking(unittest.TestCase):
         triggering = res["result"]["triggering_events"]
         self.assertIn("bereavement", triggering)
         facts = {f["field"]: f["value"] for f in res["result"]["factual_claims"]}
-        self.assertIn("employment_status", facts)
-        self.assertEqual(facts["employment_status"], "bereaved_survivor")
+        self.assertNotIn("employment_status", facts)
 
     # -------------------------------------------------------------------
     # BLOCKING ITEM 7 — Urgency escalation: rent overdue by date
@@ -256,10 +255,10 @@ class TestContractShapeAndBlocking(unittest.TestCase):
         self.assertNotEqual(hn["urgency"], "immediate")
 
     # -------------------------------------------------------------------
-    # BLOCKING ITEM 8 — Eviction threat → housing_assistance immediate
+    # BLOCKING ITEM 8 — Eviction threat → housing_assistance baseline high (Slav Item 1)
     # -------------------------------------------------------------------
     def test_block_8_eviction_threat_generates_immediate_housing_need(self):
-        """'Landlord said he will evict us' must generate housing_assistance with urgency=immediate."""
+        """'Landlord said he will evict us' must generate housing_assistance at baseline 'high'."""
         stories = [
             "My landlord said he will evict us if we don't pay by Friday. ZIP 95823.",
             "The landlord is going to evict me next week. I have two kids. ZIP 95823.",
@@ -273,7 +272,7 @@ class TestContractShapeAndBlocking(unittest.TestCase):
                 if n.get("category") == "housing_assistance"
             ]
             self.assertGreater(len(housing_needs), 0)
-            self.assertEqual(housing_needs[0]["urgency"], "immediate")
+            self.assertEqual(housing_needs[0]["urgency"], "high")
 
     # -------------------------------------------------------------------
     # BLOCKING ITEM 9 — Unemployment income extraction

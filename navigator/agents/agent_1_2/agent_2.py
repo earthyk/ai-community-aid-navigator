@@ -1,6 +1,6 @@
 """
 AI Community Aid Navigator — Agent 2: Case Analysis & Clarification
-Contracts: docs/contracts/SHARED_CONTRACTS.md (v1.1)
+Contracts: docs/contracts/SHARED_CONTRACTS.md (v1.2)
 Pure standard library implementation (Python 3.11+). Zero external dependencies.
 Rules: 4-Gate Question Filter, Pacing Ceiling (<= 2/turn §30.8), Preservation of Unknowns
 
@@ -22,6 +22,33 @@ Contract invariants enforced:
 """
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Set
+
+_THREAT_CLARIFICATION_ITEMS = [
+    (
+        "has_written_eviction_notice",
+        "Determine whether landlord gave a formal written eviction notice",
+        "Did you receive a written eviction notice from your landlord?",
+        "Distinguishes a verbal threat from a formal legal notice with statutory response timelines",
+    ),
+    (
+        "has_court_writ_or_judgment",
+        "Determine whether a court judgment or writ of eviction exists",
+        "Is there a court judgment or writ of eviction?",
+        "Identifies active court enforcement requiring immediate legal aid intervention",
+    ),
+    (
+        "specific_move_out_date",
+        "Determine whether a specific move-out date was named",
+        "Did the landlord name a specific move-out date?",
+        "Establishes urgency window for emergency housing and legal defense",
+    ),
+    (
+        "imminent_removal_in_progress",
+        "Determine whether landlord is attempting immediate physical removal or lock change",
+        "Is the landlord trying to remove you right now, for example by changing the locks?",
+        "Identifies active illegal lockout requiring immediate emergency response",
+    ),
+]
 
 
 def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -61,7 +88,6 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     candidate_requirements: List[Dict[str, Any]] = payload.get("candidate_requirements") or []
     raw_ambiguity_flags: List[Any] = payload.get("ambiguity_flags") or []
 
-    # Normalize ambiguity_flags: support both Contract 4.1 objects and legacy strings
     ambiguity_flag_notes: Set[str] = set()
     for af in raw_ambiguity_flags:
         if isinstance(af, str):
@@ -96,13 +122,11 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     clarification_requests: List[Dict[str, Any]] = []
     seen_keys: Set[str] = set()
 
-    # Backward Compatibility (Item 4): if triggering_circumstances was previously asked,
-    # treat it as covering triggering_events and employment_status root-cause tokens.
     if "triggering_circumstances" in already_asked_keys:
         already_asked_keys.add("triggering_events")
         already_asked_keys.add("employment_status")
 
-    # Step 1 — Circumstance-First Gate: ask about root cause before anything else
+    # Step 1 — Circumstance-First Gate
     unspecified_hardship = "unspecified_hardship_cause" in ambiguity_flag_notes
     circumstances_already_asked = "triggering_circumstances" in already_asked_keys
     circumstances_in_facts = "triggering_circumstances" in known_keys
@@ -143,22 +167,32 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             "is_mock": True,
         }
 
-    # 2. ZIP Code Question — ask whenever zip_code is not known and not already asked.
-    #    Unconditional: applies on every turn regardless of hardship flags.
+    # Detect housing threat without confirmed written notice or actual lockout (Item 2)
+    is_actual_lockout = known_facts.get("eviction_notice_type") == "lockout"
+    notice_is_reported = known_facts.get("has_written_eviction_notice") is True
+    has_housing_threat = any(
+        isinstance(n, dict)
+        and n.get("category") == "housing_assistance"
+        and any(
+            w in f"{n.get('description', '')} {n.get('urgency_reason', '')} {n.get('original_quote', '')}".lower()
+            for w in ["threat", "lock", "evict"]
+        )
+        for n in needs
+    ) and not notice_is_reported and not is_actual_lockout
+
+    # 2. ZIP Code Question
     has_zip_fact = "zip_code" in known_keys
     zip_already_asked = "zip_code" in already_asked_keys
-    notice_is_reported_early = known_facts.get("has_written_eviction_notice") is True
     eviction_followup_pending = (
-        notice_is_reported_early
+        notice_is_reported
         and ("eviction_notice_type" not in already_asked_keys)
         and ("eviction_notice_type" not in known_keys)
     )
-    circumstances_resolved = circumstances_already_asked or circumstances_in_facts
 
     if (
         not has_zip_fact
         and not zip_already_asked
-        and needs  # only when there is at least one service need
+        and needs
         and not eviction_followup_pending
     ):
         if len(clarification_requests) < 2:
@@ -177,15 +211,11 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             })
             seen_keys.add("zip_code")
 
-    # 3. Income Question — required (can_skip=False).
-    #    Re-ask once if it was asked before but remains unsettled in known_keys (Item 1).
+    # 3. Income Question — required (can_skip=False) with 1 retry ceiling
     has_income_fact = "household_gross_monthly_income" in known_keys
-    income_ask_count = sum(1 for k in raw_already_asked if (k == "household_gross_monthly_income" or (isinstance(k, dict) and k.get("fact_key") == "household_gross_monthly_income")))
-    notice_is_reported = known_facts.get("has_written_eviction_notice") is True
-    eviction_followup_pending = (
-        notice_is_reported
-        and ("eviction_notice_type" not in already_asked_keys)
-        and ("eviction_notice_type" not in known_keys)
+    income_ask_count = sum(
+        1 for k in raw_already_asked
+        if (k == "household_gross_monthly_income" or (isinstance(k, dict) and k.get("fact_key") == "household_gross_monthly_income"))
     )
 
     should_ask_income = (
@@ -209,10 +239,7 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
         })
         seen_keys.add("household_gross_monthly_income")
 
-    # 4. Eviction Notice Follow-up: Document Type & Date
-    #    Only when has_written_eviction_notice is True in case_facts (Gate 1 pass),
-    #    and the follow-up has not already been asked.
-    notice_is_reported = known_facts.get("has_written_eviction_notice") is True
+    # 4a. Eviction Notice Follow-up (when written notice IS already known)
     eviction_type_already_asked = (
         "eviction_notice_type" in already_asked_keys
         or "eviction_notice_details" in already_asked_keys
@@ -236,6 +263,25 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             })
             seen_keys.add("eviction_notice_type")
 
+    # 4b. Item 2: Julia's Threat Clarification Questions (when threat reported, no written notice/lockout yet)
+    if has_housing_threat and len(clarification_requests) < 2:
+        for t_key, t_intent, t_question, t_reason in _THREAT_CLARIFICATION_ITEMS:
+            if len(clarification_requests) >= 2:
+                break
+            if t_key in known_keys or t_key in already_asked_keys or t_key in seen_keys:
+                continue
+            clarification_requests.append({
+                "fact_key": t_key,
+                "question_intent": t_intent,
+                "user_facing_question": t_question,
+                "reason": t_reason,
+                "applicable_program_ids": [],
+                "verified_rule_ref": None,
+                "necessity_level": "required_for_decision",
+                "can_skip": False,
+            })
+            seen_keys.add(t_key)
+
     # 5. 4-Gate Filter on candidate_requirements (Rule 19.2)
     for req in candidate_requirements:
         if not isinstance(req, dict):
@@ -246,11 +292,9 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             continue
         fact_key = str(fact_key).strip()
 
-        # Gate 2: skip already-asked keys immediately
         if fact_key in already_asked_keys:
             continue
 
-        # Gate 3: suppress questions without a verified rule ref
         verified_rule_ref = req.get("verified_rule_ref")
         if (
             verified_rule_ref is None
@@ -259,19 +303,15 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
         ):
             continue
 
-        # Gate 1: skip known facts (except eviction notice — handled separately above)
         if fact_key in known_keys and fact_key != "has_written_eviction_notice":
             continue
 
-        # Gate 4: deduplication within this turn
         if fact_key in seen_keys:
             continue
 
-        # Special case: if has_written_eviction_notice is True (already known), don't re-ask the boolean
         if fact_key == "has_written_eviction_notice" and known_facts.get("has_written_eviction_notice") is True:
             continue
 
-        # Special case: if has_written_eviction_notice is False, skip all eviction questions
         if fact_key == "has_written_eviction_notice" and known_facts.get("has_written_eviction_notice") is False:
             continue
 
@@ -279,7 +319,6 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             break
 
         seen_keys.add(fact_key)
-
         q_text, intent, reason, can_skip = _build_question(fact_key, req)
 
         clarification_requests.append({
@@ -293,11 +332,7 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             "can_skip": can_skip,
         })
 
-    # 5b. Household Size Question (Item 3) — asked after all higher-priority questions are settled:
-    #    - household_size is not known and not already asked
-    #    - AND (candidate_requirements referenced it OR food_assistance is a need)
-    #    - AND income is already known (not pending this turn)
-    #    - AND no other question was generated this turn (pacing: fill only when the turn is otherwise empty)
+    # 5b. Household Size Question
     has_hh_size_fact = "household_size" in known_keys
     hh_size_already_asked = "household_size" in already_asked_keys
     cand_needs_hh_size = any(
@@ -308,8 +343,6 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
         isinstance(n, dict) and n.get("category") == "food_assistance" for n in needs
     )
 
-    # Ask household_size if candidate requirements explicitly requested it,
-    # OR if food need is present and no other question was generated this turn (pacing).
     should_ask_hh_size = (
         not has_hh_size_fact
         and not hh_size_already_asked
@@ -340,19 +373,19 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     has_food_need = any(isinstance(n, dict) and n.get("category") == "food_assistance" for n in needs)
     has_income_need_flag = any(n.get("category") == "income_assistance" for n in needs if isinstance(n, dict))
     has_income_loss_fact = any(
-        any(k in str(f.get("value", "")) for k in ["laid_off", "bereavement", "unemployed", "fired"])
+        any(k in str(f.get("value", "")) for k in ["laid_off", "unemployed", "fired", "reduced_hours"])
         for f in case_facts if isinstance(f, dict)
     )
     optional_food_check = (has_income_need_flag or has_income_loss_fact) and not has_food_need
 
-    # 7. Food Urgency Escalation
+    # 7. Grounded Food Urgency Preservation (Item 6: preserve Agent 1's grounded urgency)
     need_updates: List[Dict[str, Any]] = []
     for n in needs:
         if isinstance(n, dict) and n.get("category") == "food_assistance":
             need_updates.append({
                 "need_id": n.get("need_id"),
-                "urgency": "immediate",
-                "urgency_reason": n.get("urgency_reason") or "Food assistance needed",
+                "urgency": n.get("urgency") or "high",
+                "urgency_reason": n.get("urgency_reason") or "Food problem reported",
             })
 
     status = "needs_clarification" if len(clarification_requests) > 0 else "completed"

@@ -130,11 +130,12 @@ class Test16ScenarioBenchmark(unittest.TestCase):
         self.assertIn("material_in_kind", categories)
 
     def test_scenario_10_bereavement_survivor(self):
-        """Case 10: Bereavement and survivor income assistance."""
+        """Case 10: Bereavement is recorded in triggering_events without fabricating income_assistance."""
         story = "My husband passed away last week, he was our sole earner and I need survivor benefits in 95823."
         res = self._run_agent_1("10", story)
         categories = [n["category"] for n in res["result"]["proposed_needs"]]
-        self.assertIn("income_assistance", categories)
+        self.assertIn("bereavement", res["result"]["triggering_events"])
+        self.assertNotIn("income_assistance", categories)
 
     def test_scenario_11_unverified_rule_gate_3(self):
         """Case 11: Agent 2 suppresses questions lacking a verified rule ref (Gate 3)."""
