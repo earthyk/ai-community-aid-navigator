@@ -2,6 +2,11 @@
 import json, os
 from datetime import datetime, timezone
 
+def _load_sac_zips():
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "kb", "sacramento_county_zips.json")
+    with open(path, encoding="utf-8") as f:
+        return set(json.load(f)["zips"])
+
 SCHEMA_VERSION = "1.0"  # contracts v1.0 frozen Oct 23
 KB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "kb", "kb_sacramento.json")
 ECHO = ["request_id", "run_id", "case_id", "case_version", "correlation_id"]
@@ -23,7 +28,7 @@ _names = ["Alameda", "Alpine", "Amador", "Butte", "Calaveras", "Colusa", "Contra
           "Solano", "Sonoma", "Stanislaus", "Sutter", "Tehama", "Trinity", "Tulare", "Tuolumne", "Ventura", "Yolo", "Yuba"]
 CA_COUNTIES = {f"{n} County" for n in _names}  # all 58 California counties
 # Local fallback only, used when a request carries a ZIP but no county (the Supervisor normally adds the county).
-SAC_COUNTY_ZIPS = {str(z) for z in range(95811, 95839)}
+SAC_COUNTY_ZIPS = _load_sac_zips()
 
 
 def load_kb(path=None):
@@ -43,7 +48,7 @@ def to_counties(geography):
             if z in SAC_COUNTY_ZIPS:
                 counties.add("Sacramento County")
                 issues.append(issue("COUNTY_FROM_ZIP_FALLBACK", "warning",
-                                    f"No county in the request; Sacramento County taken from the local ZIP fallback for {z}.", z))
+                                    f"No county in the request; Sacramento County taken from the county ZIP list (saccounty.gov) for {z}.", z))
             else:
                 issues.append(issue("GEOGRAPHY_UNMAPPED", "warning", f"ZIP {z} has no county in the request and is not in the local lookup; no county assumed.", z))
     return counties, issues
