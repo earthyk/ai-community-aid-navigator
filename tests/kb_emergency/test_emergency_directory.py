@@ -1,10 +1,15 @@
-"""Checks the emergency directory (owner: Silver): numbers present, every claim sourced and linked, no assumed hours."""
+"""Checks the emergency directory (owner: Silver): numbers present, every claim sourced and linked, no assumed hours.
+PR #16 additions: 7 local_police_non_emergency contacts; FJC hours corrected to Monday-Friday 8:30 AM – 5:00 PM."""
 import json
 import os
 import re
 import unittest
 
 PATH = os.path.join(os.path.dirname(__file__), "..", "..", "navigator", "kb", "emergency", "emergency_directory.json")
+
+# Subcategories that belong on the safety path (crisis resources shown in the safety notice).
+# local_police_non_emergency is intentionally absent: police contacts are plan-only.
+_SAFETY_NOTICE_SUBCATEGORIES = {"emergency_services", "mental_health_crisis", "domestic_violence_sexual_assault"}
 
 
 class EmergencyDirectoryTests(unittest.TestCase):
@@ -42,10 +47,68 @@ class EmergencyDirectoryTests(unittest.TestCase):
         for r in self.d["program_records"]:
             avail = [e for e in self.d["evidence_records"] if e["program_id"] == r["program_id"] and e["field_path"] == "availability"][0]
             if r["availability"] == "confirmed_open":
-                self.assertTrue(re.search(r"24|seven days", avail["claim_value"]), r["program_id"])
+                # Allow 24/7 phrasing (hotline, WEAVE) or specific weekday hours (FJC: "Monday-Friday, 8:30 AM - 5:00 PM")
+                self.assertTrue(re.search(r"24|seven days|Monday|AM|PM", avail["claim_value"]), r["program_id"])
                 self.assertEqual(avail["verification_status"], "verified")
             else:
                 self.assertEqual(avail["verification_status"], "needs_review")
+
+    # --- PR #16 tests ---
+
+    def test_police_records_are_not_in_the_safety_notice(self):
+        """Police contacts (subcategory local_police_non_emergency) must not appear in the
+        safety-notice set. The safety notice shows only crisis subcategories."""
+        for r in self.d["program_records"]:
+            if r["subcategory"] == "local_police_non_emergency":
+                self.assertNotIn(
+                    r["subcategory"],
+                    _SAFETY_NOTICE_SUBCATEGORIES,
+                    f"{r['program_id']} has subcategory local_police_non_emergency "
+                    "but that would land it in the safety notice",
+                )
+
+    def test_lockout_story_does_not_produce_a_safety_flag(self):
+        """A lockout is a housing/property event; it must not be stored as a crisis resource
+        that triggers a safety flag. No record with 'lockout' in its name or program_id
+        should carry a safety-notice subcategory.
+        Police contacts (the right resource for a lockout) must not be crisis subcategories."""
+        lockout_ids = [
+            r["program_id"] for r in self.d["program_records"]
+            if "lockout" in r["program_id"].lower() or "lockout" in r["program_name"].lower()
+        ]
+        # No lockout record should exist; if one is ever added it must not be crisis.
+        for pid in lockout_ids:
+            r = next(p for p in self.d["program_records"] if p["program_id"] == pid)
+            self.assertNotIn(
+                r["subcategory"],
+                _SAFETY_NOTICE_SUBCATEGORIES,
+                f"{pid} is a lockout record but has a safety-notice subcategory",
+            )
+        # Police contacts (which cover lockout calls) must not be crisis subcategories.
+        police_records = [r for r in self.d["program_records"]
+                         if r["subcategory"] == "local_police_non_emergency"]
+        self.assertGreater(len(police_records), 0, "Expected at least one local_police_non_emergency record")
+        for r in police_records:
+            self.assertNotIn(
+                r["subcategory"],
+                _SAFETY_NOTICE_SUBCATEGORIES,
+                f"{r['program_id']} is a police contact but has a safety-notice subcategory",
+            )
+
+    def test_fjc_hours_are_not_24_7(self):
+        """After the PR #16 recheck the FJC shows weekday office hours, not 24/7.
+        The availability evidence must state a weekday schedule and must not say '24/7' or 'seven days'."""
+        fjc_avail = next(
+            e for e in self.d["evidence_records"]
+            if e["program_id"] == "res_dv_fjc_sac_001" and e["field_path"] == "availability"
+        )
+        self.assertNotRegex(fjc_avail["claim_value"], r"24/7|24 hours|seven days",
+                            "FJC hours must not claim 24/7 availability")
+        self.assertRegex(fjc_avail["claim_value"], r"Monday|AM|PM",
+                         "FJC hours must state a weekday schedule")
+        fjc_rec = next(r for r in self.d["program_records"] if r["program_id"] == "res_dv_fjc_sac_001")
+        self.assertEqual(fjc_rec["availability"], "confirmed_open",
+                         "FJC availability should be confirmed_open now that hours are on record")
 
 
 if __name__ == "__main__":

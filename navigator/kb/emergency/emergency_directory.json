@@ -274,15 +274,240 @@
       ],
       "deadlines": [],
       "processing_time": null,
-      "availability": "unknown",
+      "availability": "confirmed_open",
       "sources": [
         "ev_fjc_001",
         "ev_fjc_002",
         "ev_fjc_003",
         "ev_fjc_004"
       ],
-      "last_verified_at": "2026-11-06T16:05:00-08:00",
-      "verification_status": "needs_review"
+      "last_verified_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified"
+    }
+    ,
+    {
+      "program_id": "er_police_sacpd_001",
+      "program_name": "Sacramento Police Department — Non-Emergency",
+      "organization": "Sacramento Police Department",
+      "category": "emergency_crisis",
+      "subcategory": "local_police_non_emergency",
+      "geography": [
+        "City of Sacramento"
+      ],
+      "eligibility_criteria": [],
+      "required_documents": [],
+      "application_method": [],
+      "contact": [
+        {
+          "value": "916-808-5471",
+          "evidence_refs": [
+            "ev_sacpd_001"
+          ],
+          "verification_status": "verified",
+          "checked_at": "2026-11-12T10:30:00-08:00"
+        }
+      ],
+      "deadlines": [],
+      "processing_time": null,
+      "availability": "unknown",
+      "sources": [
+        "ev_sacpd_001",
+        "ev_sacpd_002"
+      ],
+      "last_verified_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified"
+    },
+    {
+      "program_id": "er_police_sheriff_001",
+      "program_name": "Sacramento County Sheriff's Office — Non-Emergency",
+      "organization": "Sacramento County Sheriff's Office",
+      "category": "emergency_crisis",
+      "subcategory": "local_police_non_emergency",
+      "geography": [
+        "Sacramento County"
+      ],
+      "eligibility_criteria": [],
+      "required_documents": [],
+      "application_method": [],
+      "contact": [
+        {
+          "value": "916-874-5115",
+          "evidence_refs": [
+            "ev_sheriff_001"
+          ],
+          "verification_status": "verified",
+          "checked_at": "2026-11-12T10:30:00-08:00"
+        }
+      ],
+      "deadlines": [],
+      "processing_time": null,
+      "availability": "confirmed_open",
+      "sources": [
+        "ev_sheriff_001",
+        "ev_sheriff_002"
+      ],
+      "last_verified_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified"
+    },
+    {
+      "program_id": "er_police_citrusheights_001",
+      "program_name": "Citrus Heights Police — Non-Emergency",
+      "organization": "Citrus Heights Police",
+      "category": "emergency_crisis",
+      "subcategory": "local_police_non_emergency",
+      "geography": [
+        "Citrus Heights"
+      ],
+      "eligibility_criteria": [],
+      "required_documents": [],
+      "application_method": [],
+      "contact": [
+        {
+          "value": "916-727-5500",
+          "evidence_refs": [
+            "ev_citrusheights_001"
+          ],
+          "verification_status": "verified",
+          "checked_at": "2026-11-12T10:30:00-08:00"
+        }
+      ],
+      "deadlines": [],
+      "processing_time": null,
+      "availability": "unknown",
+      "sources": [
+        "ev_citrusheights_001",
+        "ev_citrusheights_002"
+      ],
+      "last_verified_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified"
+    },
+    {
+      "program_id": "er_police_elkgrove_001",
+      "program_name": "Elk Grove Police — Non-Emergency",
+      "organization": "Elk Grove Police",
+      "category": "emergency_crisis",
+      "subcategory": "local_police_non_emergency",
+      "geography": [
+        "Elk Grove"
+      ],
+      "eligibility_criteria": [],
+      "required_documents": [],
+      "application_method": [],
+      "contact": [
+        {
+          "value": "916-714-5115",
+          "evidence_refs": [
+            "ev_elkgrove_001"
+          ],
+          "verification_status": "verified",
+          "checked_at": "2026-11-12T10:30:00-08:00"
+        }
+      ],
+      "deadlines": [],
+      "processing_time": null,
+      "availability": "unknown",
+      "sources": [
+        "ev_elkgrove_001",
+        "ev_elkgrove_002"
+      ],
+      "last_verified_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified"
+    },
+    {
+      "program_id": "er_police_folsom_001",
+      "program_name": "Folsom Police — Non-Emergency",
+      "organization": "Folsom Police",
+      "category": "emergency_crisis",
+      "subcategory": "local_police_non_emergency",
+      "geography": [
+        "Folsom"
+      ],
+      "eligibility_criteria": [],
+      "required_documents": [],
+      "application_method": [],
+      "contact": [
+        {
+          "value": "916-355-7231",
+          "evidence_refs": [
+            "ev_folsom_001"
+          ],
+          "verification_status": "verified",
+          "checked_at": "2026-11-12T10:30:00-08:00"
+        }
+      ],
+      "deadlines": [],
+      "processing_time": null,
+      "availability": "unknown",
+      "sources": [
+        "ev_folsom_001",
+        "ev_folsom_002"
+      ],
+      "last_verified_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified"
+    },
+    {
+      "program_id": "er_police_galt_001",
+      "program_name": "Galt Police — Non-Emergency",
+      "organization": "Galt Police",
+      "category": "emergency_crisis",
+      "subcategory": "local_police_non_emergency",
+      "geography": [
+        "Galt"
+      ],
+      "eligibility_criteria": [],
+      "required_documents": [],
+      "application_method": [],
+      "contact": [
+        {
+          "value": "209-366-7000",
+          "evidence_refs": [
+            "ev_galt_001"
+          ],
+          "verification_status": "verified",
+          "checked_at": "2026-11-12T10:30:00-08:00"
+        }
+      ],
+      "deadlines": [],
+      "processing_time": null,
+      "availability": "unknown",
+      "sources": [
+        "ev_galt_001",
+        "ev_galt_002"
+      ],
+      "last_verified_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified"
+    },
+    {
+      "program_id": "er_police_ranchocordova_001",
+      "program_name": "Rancho Cordova Police — Non-Emergency",
+      "organization": "Rancho Cordova Police",
+      "category": "emergency_crisis",
+      "subcategory": "local_police_non_emergency",
+      "geography": [
+        "Rancho Cordova"
+      ],
+      "eligibility_criteria": [],
+      "required_documents": [],
+      "application_method": [],
+      "contact": [
+        {
+          "value": "916-362-5115",
+          "evidence_refs": [
+            "ev_ranchocordova_001"
+          ],
+          "verification_status": "verified",
+          "checked_at": "2026-11-12T10:30:00-08:00"
+        }
+      ],
+      "deadlines": [],
+      "processing_time": null,
+      "availability": "unknown",
+      "sources": [
+        "ev_ranchocordova_001",
+        "ev_ranchocordova_002"
+      ],
+      "last_verified_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified"
     }
   ],
   "evidence_records": [
@@ -576,14 +801,196 @@
       "evidence_id": "ev_fjc_004",
       "program_id": "res_dv_fjc_sac_001",
       "field_path": "availability",
-      "claim_value": "Hours are not listed on the page.",
-      "source_url": "https://sacda.org/victim-services/family-justice-center/",
-      "checked_at": "2026-11-06T16:05:00-08:00",
-      "verification_status": "needs_review",
-      "source_title": "The Sacramento Regional Family Justice Center | Sacramento County District Attorney (last modified Feb 2, 2026)",
+      "claim_value": "Monday-Friday, 8:30 AM - 5:00 PM",
+      "source_url": "https://sacramentofjc.org/",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified",
+      "source_title": "Sacramento Regional Family Justice Center (sacramentofjc.org)",
       "source_authority_scope": "county_government",
       "effective_date": null,
-      "notes": "availability = unknown; walk-in policy not stated. Call to confirm."
+      "notes": "Hours stated on the official FJC page: MONDAY-FRIDAY, 8:30A-5:00P. Not 24/7. Rechecked 2026-11-12."
+    },
+    {
+      "evidence_id": "ev_sacpd_001",
+      "program_id": "er_police_sacpd_001",
+      "field_path": "contact[0]",
+      "claim_value": "916-808-5471",
+      "source_url": "https://www.cityofsacramento.gov/police/your-sacpd/about/contact-us",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified",
+      "source_title": "Contact Us | Sacramento Police Department",
+      "source_authority_scope": "local_government",
+      "effective_date": null,
+      "notes": "Non-emergency dispatch number as published on the city page."
+    },
+    {
+      "evidence_id": "ev_sacpd_002",
+      "program_id": "er_police_sacpd_001",
+      "field_path": "availability",
+      "claim_value": "Hours not stated on the page.",
+      "source_url": "https://www.cityofsacramento.gov/police/your-sacpd/about/contact-us",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "needs_review",
+      "source_title": "Contact Us | Sacramento Police Department",
+      "source_authority_scope": "local_government",
+      "effective_date": null,
+      "notes": "Hours not stated on the contact page checked."
+    },
+    {
+      "evidence_id": "ev_sheriff_001",
+      "program_id": "er_police_sheriff_001",
+      "field_path": "contact[0]",
+      "claim_value": "916-874-5115",
+      "source_url": "https://www.saccounty.gov/Pages/Calling911.aspx",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified",
+      "source_title": "Calling 911 | County of Sacramento",
+      "source_authority_scope": "county_government",
+      "effective_date": null,
+      "notes": "Non-emergency number for the Sacramento County Sheriff's Communications Center."
+    },
+    {
+      "evidence_id": "ev_sheriff_002",
+      "program_id": "er_police_sheriff_001",
+      "field_path": "availability",
+      "claim_value": "24 hours/7 days",
+      "source_url": "https://www.sacsheriff.com/pages/faqs.php",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified",
+      "source_title": "FAQs | Sacramento County Sheriff's Office",
+      "source_authority_scope": "local_government",
+      "effective_date": null,
+      "notes": "The Sheriff's FAQ states the Communications Center is available 24 hours/7 days."
+    },
+    {
+      "evidence_id": "ev_citrusheights_001",
+      "program_id": "er_police_citrusheights_001",
+      "field_path": "contact[0]",
+      "claim_value": "916-727-5500",
+      "source_url": "https://www.saccounty.gov/Pages/Calling911.aspx",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified",
+      "source_title": "Calling 911 | County of Sacramento",
+      "source_authority_scope": "county_government",
+      "effective_date": null,
+      "notes": null
+    },
+    {
+      "evidence_id": "ev_citrusheights_002",
+      "program_id": "er_police_citrusheights_001",
+      "field_path": "availability",
+      "claim_value": "Hours not stated on the page.",
+      "source_url": "https://www.saccounty.gov/Pages/Calling911.aspx",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "needs_review",
+      "source_title": "Calling 911 | County of Sacramento",
+      "source_authority_scope": "county_government",
+      "effective_date": null,
+      "notes": "Hours not stated on the county page checked."
+    },
+    {
+      "evidence_id": "ev_elkgrove_001",
+      "program_id": "er_police_elkgrove_001",
+      "field_path": "contact[0]",
+      "claim_value": "916-714-5115",
+      "source_url": "https://www.saccounty.gov/Pages/Calling911.aspx",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified",
+      "source_title": "Calling 911 | County of Sacramento",
+      "source_authority_scope": "county_government",
+      "effective_date": null,
+      "notes": null
+    },
+    {
+      "evidence_id": "ev_elkgrove_002",
+      "program_id": "er_police_elkgrove_001",
+      "field_path": "availability",
+      "claim_value": "Hours not stated on the page.",
+      "source_url": "https://www.saccounty.gov/Pages/Calling911.aspx",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "needs_review",
+      "source_title": "Calling 911 | County of Sacramento",
+      "source_authority_scope": "county_government",
+      "effective_date": null,
+      "notes": "Hours not stated on the county page checked."
+    },
+    {
+      "evidence_id": "ev_folsom_001",
+      "program_id": "er_police_folsom_001",
+      "field_path": "contact[0]",
+      "claim_value": "916-355-7231",
+      "source_url": "https://www.saccounty.gov/Pages/Calling911.aspx",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified",
+      "source_title": "Calling 911 | County of Sacramento",
+      "source_authority_scope": "county_government",
+      "effective_date": null,
+      "notes": null
+    },
+    {
+      "evidence_id": "ev_folsom_002",
+      "program_id": "er_police_folsom_001",
+      "field_path": "availability",
+      "claim_value": "Hours not stated on the page.",
+      "source_url": "https://www.saccounty.gov/Pages/Calling911.aspx",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "needs_review",
+      "source_title": "Calling 911 | County of Sacramento",
+      "source_authority_scope": "county_government",
+      "effective_date": null,
+      "notes": "Hours not stated on the county page checked."
+    },
+    {
+      "evidence_id": "ev_galt_001",
+      "program_id": "er_police_galt_001",
+      "field_path": "contact[0]",
+      "claim_value": "209-366-7000",
+      "source_url": "https://www.saccounty.gov/Pages/Calling911.aspx",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified",
+      "source_title": "Calling 911 | County of Sacramento",
+      "source_authority_scope": "county_government",
+      "effective_date": null,
+      "notes": null
+    },
+    {
+      "evidence_id": "ev_galt_002",
+      "program_id": "er_police_galt_001",
+      "field_path": "availability",
+      "claim_value": "Hours not stated on the page.",
+      "source_url": "https://www.saccounty.gov/Pages/Calling911.aspx",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "needs_review",
+      "source_title": "Calling 911 | County of Sacramento",
+      "source_authority_scope": "county_government",
+      "effective_date": null,
+      "notes": "Hours not stated on the county page checked."
+    },
+    {
+      "evidence_id": "ev_ranchocordova_001",
+      "program_id": "er_police_ranchocordova_001",
+      "field_path": "contact[0]",
+      "claim_value": "916-362-5115",
+      "source_url": "https://www.saccounty.gov/Pages/Calling911.aspx",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "verified",
+      "source_title": "Calling 911 | County of Sacramento",
+      "source_authority_scope": "county_government",
+      "effective_date": null,
+      "notes": null
+    },
+    {
+      "evidence_id": "ev_ranchocordova_002",
+      "program_id": "er_police_ranchocordova_001",
+      "field_path": "availability",
+      "claim_value": "Hours not stated on the page.",
+      "source_url": "https://www.saccounty.gov/Pages/Calling911.aspx",
+      "checked_at": "2026-11-12T10:30:00-08:00",
+      "verification_status": "needs_review",
+      "source_title": "Calling 911 | County of Sacramento",
+      "source_authority_scope": "county_government",
+      "effective_date": null,
+      "notes": "Hours not stated on the county page checked."
     }
   ]
 }

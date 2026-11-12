@@ -8,6 +8,7 @@ import json, os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 T = "2026-11-06T16:05:00-08:00"
+T_FJC = "2026-11-12T10:30:00-08:00"  # FJC hours rechecked on sacramentofjc.org
 CATEGORY = "emergency_crisis"  # PROPOSED (contracts v1.2)
 
 
@@ -78,14 +79,22 @@ R.append(build("res_dv_hotline_us_001",
 ], "ndvh"))
 # 5. Sacramento Regional Family Justice Center
 SF = src("https://sacda.org/victim-services/family-justice-center/", "The Sacramento Regional Family Justice Center | Sacramento County District Attorney (last modified Feb 2, 2026)", "county_government")
-R.append(build("res_dv_fjc_sac_001",
+SF_HOURS = src("https://sacramentofjc.org/", "Sacramento Regional Family Justice Center (sacramentofjc.org)", "county_government")
+fjc_rec, fjc_ev = build("res_dv_fjc_sac_001",
                {"name": "Sacramento Regional Family Justice Center", "org": "Sacramento Regional Family Justice Center (Sacramento County District Attorney)", "sub": "domestic_violence_sexual_assault",
-                "geo": ["Sacramento County"], "availability": "unknown", "status": "needs_review"}, [
+                "geo": ["Sacramento County"], "availability": "confirmed_open", "status": "verified"}, [
     ("application_method[0]", "Services listed: individual and group counseling, a mobile civil legal team, safety planning, temporary restraining order applications, and Camp HOPE.", SF, "List from the page, joined in one claim."),
     ("contact[0]", "916.875.HOPE (4673)", SF, "Matches the number in Julia's protocol."),
     ("contact[1]", "3701 Power Inn, Suite 3100 (Third Floor), Sacramento, CA 95826", SF, None),
-    ("availability", "Hours are not listed on the page.", SF, "availability = unknown; walk-in policy not stated. Call to confirm.", "needs_review"),
-], "fjc"))
+    ("availability", "Monday-Friday, 8:30 AM - 5:00 PM", SF_HOURS, "Hours stated on the official FJC page: MONDAY-FRIDAY, 8:30A-5:00P. Not 24/7. Rechecked 2026-11-12."),
+], "fjc")
+# Patch the availability evidence to carry the recheck timestamp
+for e in fjc_ev:
+    if e["field_path"] == "availability":
+        e["checked_at"] = T_FJC
+        e["evidence_id"] = "ev_fjc_004"  # keep stable id
+fjc_rec["last_verified_at"] = T_FJC
+R.append((fjc_rec, fjc_ev))
 
 out = {"schema_version": "1.0", "note": "Emergency and crisis resources for the safety path. Separate from the KB; category emergency_crisis PROPOSED for contracts v1.2.",
        "program_records": [r for r, _ in R], "evidence_records": [e for _, ev in R for e in ev]}
