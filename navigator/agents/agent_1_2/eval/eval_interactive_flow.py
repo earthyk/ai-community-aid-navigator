@@ -37,6 +37,11 @@ SCENARIOS = {
         "I was doing okay until my daughter had an emergency asthma hospitalization last week, and now the hospital bill took all my rent money.",
         "Our ZIP is 95823 and income is $1,200. Rent is $1,200 due on November 1st, and we have no groceries left for the kids.",
         "There are 3 people in our household."
+    ],
+    "D_income_retry_when_unanswered": [
+        "I lost my job yesterday and need help with rent.",
+        "I live in ZIP 95823.",  # Answers ZIP, ignores income question -> triggers single retry
+        "I'm not sure what our income is right now.",  # Still doesn't provide income -> retry limit reached (1 retry), concludes
     ]
 }
 

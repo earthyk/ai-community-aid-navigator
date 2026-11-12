@@ -781,7 +781,7 @@ def _understand_story(
             reason = "Rent is overdue"
         else:
             urgency = "high"
-            reason = None
+            reason = "Unable to pay rent or facing housing instability"
 
         proposed_needs.append(_make_need(
             "housing_assistance",
@@ -1091,14 +1091,26 @@ def _parse_clarification(payload: Dict[str, Any], env: Dict[str, Any]) -> Dict[s
         except ValueError:
             pass
 
-    # 6. Food Assistance Need Detection in Clarification Answers
+    # 6. Food Assistance Need Detection in Clarification Answers (Option A: existing_needs)
     proposed_needs: List[Dict[str, Any]] = []
     if re.search(r"\b(groceries|food|hungry)\b", ans_lower):
-        existing_need_cats = [n.get("category") for n in payload.get("existing_needs", [])]
+        existing_needs = payload.get("existing_needs") or []
+        existing_need_cats = {n.get("category") for n in existing_needs if isinstance(n, dict)}
+        
         if "food_assistance" not in existing_need_cats:
+            # Find highest existing need number to avoid need_id collisions
+            max_idx = 0
+            for n in existing_needs:
+                if isinstance(n, dict):
+                    nid = str(n.get("need_id", ""))
+                    m = re.match(r"^need_(\d+)$", nid)
+                    if m:
+                        max_idx = max(max_idx, int(m.group(1)))
+            
+            next_idx = max_idx + 1 if max_idx > 0 else (len(existing_needs) + 1)
             proposed_needs.append(_make_need(
                 "food_assistance",
-                1,
+                next_idx,
                 description="Household is running low on food or groceries",
                 original_quote=ans,
                 urgency="immediate",
