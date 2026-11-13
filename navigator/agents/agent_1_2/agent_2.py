@@ -1,6 +1,6 @@
 """
 AI Community Aid Navigator — Agent 2: Case Analysis & Clarification
-Contracts: docs/contracts/SHARED_CONTRACTS.md (v1.2)
+Contracts: docs/contracts/SHARED_CONTRACTS.md (v1.1)
 Pure standard library implementation (Python 3.11+). Zero external dependencies.
 Rules: 4-Gate Question Filter, Pacing Ceiling (<= 2/turn §30.8), Preservation of Unknowns
 
@@ -263,7 +263,7 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             })
             seen_keys.add("eviction_notice_type")
 
-    # 4b. Item 2: Julia's Threat Clarification Questions (when threat reported, no written notice/lockout yet)
+    # 4b. Follow-up Item 5: All 4 threat clarification questions must be skippable ("helpful", can_skip=True)
     if has_housing_threat and len(clarification_requests) < 2:
         for t_key, t_intent, t_question, t_reason in _THREAT_CLARIFICATION_ITEMS:
             if len(clarification_requests) >= 2:
@@ -277,8 +277,8 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
                 "reason": t_reason,
                 "applicable_program_ids": [],
                 "verified_rule_ref": None,
-                "necessity_level": "required_for_decision",
-                "can_skip": False,
+                "necessity_level": "helpful",
+                "can_skip": True,
             })
             seen_keys.add(t_key)
 
@@ -378,15 +378,37 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     )
     optional_food_check = (has_income_need_flag or has_income_loss_fact) and not has_food_need
 
-    # 7. Grounded Food Urgency Preservation (Item 6: preserve Agent 1's grounded urgency)
+    # 7. Need Updates: Food Urgency Preservation + Late-Stage Housing Escalation (Follow-up Item 2)
     need_updates: List[Dict[str, Any]] = []
+    late_stage_housing = (
+        known_facts.get("has_court_writ_or_judgment") is True
+        or known_facts.get("imminent_removal_in_progress") is True
+        or known_facts.get("eviction_notice_type") in {"judgment", "writ", "lockout"}
+    )
     for n in needs:
-        if isinstance(n, dict) and n.get("category") == "food_assistance":
+        if not isinstance(n, dict):
+            continue
+        if n.get("category") == "food_assistance":
             need_updates.append({
                 "need_id": n.get("need_id"),
                 "urgency": n.get("urgency") or "high",
                 "urgency_reason": n.get("urgency_reason") or "Food problem reported",
             })
+        elif n.get("category") == "housing_assistance" and late_stage_housing:
+            if n.get("urgency") != "immediate":
+                is_lockout_now = (
+                    known_facts.get("imminent_removal_in_progress") is True
+                    or known_facts.get("eviction_notice_type") == "lockout"
+                )
+                need_updates.append({
+                    "need_id": n.get("need_id"),
+                    "urgency": "immediate",
+                    "urgency_reason": (
+                        "Active lockout or imminent removal reported"
+                        if is_lockout_now
+                        else "Court judgment or writ of eviction reported"
+                    ),
+                })
 
     status = "needs_clarification" if len(clarification_requests) > 0 else "completed"
 

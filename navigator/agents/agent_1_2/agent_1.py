@@ -1,6 +1,6 @@
 """
 AI Community Aid Navigator — Agent 1: Crisis Understanding & Clarification Parser
-Contracts: docs/contracts/SHARED_CONTRACTS.md (v1.2)
+Contracts: docs/contracts/SHARED_CONTRACTS.md (v1.1)
 Pure standard library implementation (Python 3.10+). Zero external dependencies.
 
 Contract invariants enforced (§3.1, §3.2, §4.1):
@@ -487,13 +487,17 @@ def _understand_story(
                 return s
         return fallback
 
-    # 1. Life-Safety & Distress Detection (Physical harm / self-harm only)
+    # 1. Life-Safety & Distress Detection (Neutral note; Supervisor selects directory contacts)
     safety_m = RE_SAFETY_DISTRESS.search(story)
     if safety_m and not RE_BENIGN_SAFETY_CONTEXT.search(story):
+        quote_str = safety_m.group(0)
+        is_harm_threat = bool(
+            re.search(r"\b(?:threaten|threatened|threatening|hurt|harm|kill|beat|hit|attack|abuse)\b", quote_str, re.IGNORECASE)
+        )
         flags.append({
             "type": "safety",
-            "quote": safety_m.group(0),
-            "note": "Life-safety distress or domestic violence signal detected. Display emergency 988/DV hotlines immediately.",
+            "quote": quote_str,
+            "note": "Threat of physical harm reported" if is_harm_threat else "Life-safety distress signal reported",
         })
 
     # 2. ZIP Code Extraction
@@ -696,19 +700,26 @@ def _understand_story(
         fact_idx += 1
 
     # 11. Proposed Needs — Multi-Domain Coverage
-    # Item 10: Propose income_assistance ONLY when income/job loss is stated (not bereavement alone)
-    if RE_INCOME_LOSS_SIGNAL.search(story):
+    # Item 10 & Follow-up Item 6: Propose income_assistance on income/job loss OR reduced work hours/pay cut
+    re_reduced_hours = re.compile(
+        r"\b(?:hours?\s+cut|cut\s+(?:my\s+|our\s+)?hours?|reduced\s+hours?|pay\s+cut|"
+        r"(?:hours|shifts?|schedule)\s+(?:were|was|got|are|have\s+been)\s+cut|"
+        r"(?:pay|wage|wages|salary|paycheck)\s+(?:was|were|got|has\s+been)\s+(?:cut|reduced|dropped))\b",
+        re.IGNORECASE,
+    )
+    if RE_INCOME_LOSS_SIGNAL.search(story) or re_reduced_hours.search(story):
+        is_reduced_hours = bool(re_reduced_hours.search(story)) and not bool(RE_JOB_LOSS.search(story))
         income_quote = extract_full_sentence_quote(
-            r"job|laid off|fired|unemployed|hours|paycheck|income",
+            r"job|laid off|fired|unemployed|hours|paycheck|pay|wage|income",
             story,
         )
         proposed_needs.append(_make_need(
             "income_assistance",
             need_idx,
-            description="Household income lost or severely reduced",
+            description="Work hours or pay reduced" if is_reduced_hours else "Household income lost or severely reduced",
             original_quote=income_quote,
             urgency="high",
-            urgency_reason="Income loss or unemployment reported",
+            urgency_reason="Work hours reduced" if is_reduced_hours else "Income loss or unemployment reported",
         ))
         need_idx += 1
 
@@ -969,9 +980,9 @@ def _parse_clarification(
                 "time_context": "current",
             })
 
-    # Court judgment / writ follow-up (Item 2)
+    # Court judgment / writ follow-up (Follow-up Item 2: "Yes" also sets eviction_notice_type)
     if "has_court_writ_or_judgment" in keys:
-        if re.search(r"\b(yes|yeah|yep|court|writ|judgment|sheriff)\b", ans_lower) and not re.search(r"\b(no|nope|not\s+yet|none)\b", ans_lower):
+        if re.search(r"\b(yes|yeah|yep|court|writ|judgment|sheriff)\b", ans_lower) and not re.search(r"\b(no|nope|not\s+yet|none|not\s+sure)\b", ans_lower):
             facts.append({
                 "fact_id": _fact_id("has_court_writ_or_judgment", len(facts) + 1),
                 "field": "has_court_writ_or_judgment",
@@ -979,6 +990,15 @@ def _parse_clarification(
                 "confirmation_status": "proposed",
                 "source": "user_statement",
                 "time_context": "current",
+            })
+            notice_val = "writ" if re.search(r"\bwrit\b", ans_lower) else "judgment"
+            facts.append({
+                "fact_id": _fact_id("eviction_notice_type", len(facts) + 1),
+                "field": "eviction_notice_type",
+                "value": notice_val,
+                "confirmation_status": "proposed",
+                "source": "user_statement",
+                "time_context": "user_clarification",
             })
         elif re.search(r"\b(no|nope|not\s+yet|none|no\s+court)\b", ans_lower):
             facts.append({
@@ -990,9 +1010,9 @@ def _parse_clarification(
                 "time_context": "current",
             })
 
-    # Imminent removal in progress follow-up (Item 2)
+    # Imminent removal in progress follow-up (Follow-up Item 2: "Yes" also sets eviction_notice_type="lockout")
     if "imminent_removal_in_progress" in keys:
-        if RE_ACTUAL_LOCKOUT.search(ans) or re.search(r"\b(yes|yeah|yep|changing\s+the\s+locks|right\s+now|today)\b", ans_lower):
+        if (RE_ACTUAL_LOCKOUT.search(ans) or re.search(r"\b(yes|yeah|yep|changing\s+the\s+locks|right\s+now|today)\b", ans_lower)) and not re.search(r"\b(no|nope|not\s+yet|not\s+sure)\b", ans_lower):
             facts.append({
                 "fact_id": _fact_id("imminent_removal_in_progress", len(facts) + 1),
                 "field": "imminent_removal_in_progress",
@@ -1000,6 +1020,14 @@ def _parse_clarification(
                 "confirmation_status": "proposed",
                 "source": "user_statement",
                 "time_context": "current",
+            })
+            facts.append({
+                "fact_id": _fact_id("eviction_notice_type", len(facts) + 1),
+                "field": "eviction_notice_type",
+                "value": "lockout",
+                "confirmation_status": "proposed",
+                "source": "user_statement",
+                "time_context": "user_clarification",
             })
         elif re.search(r"\b(no|nope|not\s+yet|just\s+threatened)\b", ans_lower):
             facts.append({
@@ -1011,9 +1039,14 @@ def _parse_clarification(
                 "time_context": "current",
             })
 
-    # Eviction Notice Date Extraction
+    # Move-out Date vs Eviction Notice Date Extraction (Follow-up Item 1)
     sorted_months = sorted(MONTH_MAP.keys(), key=len, reverse=True)
     months_pat = "|".join(sorted_months)
+
+    is_move_out_context = (
+        "specific_move_out_date" in keys
+        or bool(re.search(r"\b(?:leave|move\s+out|vacate|out)\s+(?:by|before|on)\b", ans_lower))
+    )
 
     date_m = re.search(
         rf"\b({months_pat})\s+(\d{{1,2}})(?:st|nd|rd|th)?,?\s*(\d{{4}})?\b",
@@ -1033,7 +1066,17 @@ def _parse_clarification(
             year_val = int(year_str) if year_str else ref_date.year
             iso_date = f"{year_val:04d}-{month_num:02d}-{day_str:02d}"
 
-            if has_notice_context or not is_rent_due:
+            if is_move_out_context and not has_notice_context:
+                if not any(f.get("field") == "specific_move_out_date" for f in facts):
+                    facts.append({
+                        "fact_id": _fact_id("specific_move_out_date", len(facts) + 1),
+                        "field": "specific_move_out_date",
+                        "value": iso_date,
+                        "confirmation_status": "proposed",
+                        "source": "user_statement",
+                        "time_context": "user_clarification",
+                    })
+            elif has_notice_context or not is_rent_due:
                 if not any(f.get("field") == "eviction_notice_date" for f in facts):
                     facts.append({
                         "fact_id": _fact_id("eviction_notice_date", len(facts) + 1),
@@ -1263,6 +1306,29 @@ def _parse_clarification(
                 original_quote=ans,
                 urgency=food_urgency,
                 urgency_reason=food_reason,
+            ))
+
+    # 6b. Follow-up Item 6: Reduced work hours / pay cut in clarification -> propose income_assistance
+    if circumstance_val == "reduced_hours":
+        existing_needs = payload.get("existing_needs") or []
+        existing_need_cats = {n.get("category") for n in existing_needs if isinstance(n, dict)}
+        if "income_assistance" not in existing_need_cats and not any(
+            n.get("category") == "income_assistance" for n in proposed_needs
+        ):
+            max_idx = 0
+            for n in existing_needs:
+                if isinstance(n, dict):
+                    m = re.match(r"^need_(\d+)$", str(n.get("need_id", "")))
+                    if m:
+                        max_idx = max(max_idx, int(m.group(1)))
+            next_idx = max(max_idx, len(existing_needs) + len(proposed_needs)) + 1
+            proposed_needs.append(_make_need(
+                "income_assistance",
+                next_idx,
+                description="Work hours or pay reduced",
+                original_quote=ans,
+                urgency="high",
+                urgency_reason="Work hours reduced",
             ))
 
     trig_events: List[str] = []
