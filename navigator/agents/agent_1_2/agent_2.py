@@ -6,7 +6,7 @@ Rules: 4-Gate Question Filter, Pacing Ceiling (<= 2/turn §30.8), Preservation o
 
 Contract invariants enforced:
 - ZIP Code Question (Item 2): if zip_code is not known and not asked, Agent 2 asks for the
-  resident's Sacramento ZIP code with can_skip=False on Turn 1.
+  resident's Sacramento ZIP code with can_skip=True on Turn 1.
 - Household Size Question (Item 3): if household_size is not known and not asked, and either
   candidate_requirements ask for it or food_assistance is in needs, ask with can_skip=True.
 - Income Question: if household_gross_monthly_income is not known, not asked, AND no
@@ -211,16 +211,12 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
             })
             seen_keys.add("zip_code")
 
-    # 3. Income Question — required (can_skip=False) with 1 retry ceiling
+    # 3. Income Question — required (can_skip=False), never repeated once in already_asked
     has_income_fact = "household_gross_monthly_income" in known_keys
-    income_ask_count = sum(
-        1 for k in raw_already_asked
-        if (k == "household_gross_monthly_income" or (isinstance(k, dict) and k.get("fact_key") == "household_gross_monthly_income"))
-    )
 
     should_ask_income = (
         not has_income_fact
-        and income_ask_count < 2
+        and "household_gross_monthly_income" not in already_asked_keys
         and not candidate_requirements
         and not unspecified_hardship
         and not eviction_followup_pending
@@ -378,7 +374,7 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     )
     optional_food_check = (has_income_need_flag or has_income_loss_fact) and not has_food_need
 
-    # 7. Need Updates: Food Urgency Preservation + Late-Stage Housing Escalation (Follow-up Item 2)
+    # 7. Need Updates: emit ONLY when urgency actually changes
     need_updates: List[Dict[str, Any]] = []
     late_stage_housing = (
         known_facts.get("has_court_writ_or_judgment") is True
@@ -388,13 +384,7 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
     for n in needs:
         if not isinstance(n, dict):
             continue
-        if n.get("category") == "food_assistance":
-            need_updates.append({
-                "need_id": n.get("need_id"),
-                "urgency": n.get("urgency") or "high",
-                "urgency_reason": n.get("urgency_reason") or "Food problem reported",
-            })
-        elif n.get("category") == "housing_assistance" and late_stage_housing:
+        if n.get("category") == "housing_assistance" and late_stage_housing:
             if n.get("urgency") != "immediate":
                 is_lockout_now = (
                     known_facts.get("imminent_removal_in_progress") is True

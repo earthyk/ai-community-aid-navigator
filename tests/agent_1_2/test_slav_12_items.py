@@ -1,5 +1,5 @@
 """
-Unit tests and real Input/Output verification for Slav & Julia's 12 review items + 6 follow-up items.
+Unit tests and real Input/Output verification for Slav & Julia's 12 review items + follow-up items.
 Run via unittest: python -m unittest tests/agent_1_2/test_slav_12_items.py -v
 Run for real I/O log: python -m tests.agent_1_2.test_slav_12_items
 """
@@ -198,7 +198,7 @@ class TestSlavTwelveItems(unittest.TestCase):
         self.assertEqual(facts.get("rent_arrears_amount"), 1600)
 
     # -------------------------------------------------------------------
-    # FOLLOW-UP 6 ITEMS FROM SLAV'S INTEGRATION RUNS
+    # FOLLOW-UP ITEMS FROM SLAV'S INTEGRATION RUNS
     # -------------------------------------------------------------------
     def test_13_followup_1_move_out_date_stored_as_specific_move_out_date(self):
         """Follow-up Item 1: 'He said we must leave by November 30.' stores specific_move_out_date, never eviction_notice_date."""
@@ -341,6 +341,56 @@ class TestSlavTwelveItems(unittest.TestCase):
         self.assertEqual(income_needs[0]["urgency"], "high")
         self.assertEqual(income_needs[0]["urgency_reason"], "Work hours reduced")
 
+    def test_19_income_question_never_repeated_once_in_already_asked(self):
+        """Commit 2 Item 3: household_gross_monthly_income is never asked again once present in already_asked."""
+        needs = [{"need_id": "need_001", "category": "housing_assistance", "urgency": "high"}]
+        facts = [{"field": "zip_code", "value": "95823"}]
+        a2 = handle_agent_2(_req_a2(needs, facts, ["zip_code", "household_gross_monthly_income"]))
+        q_keys = [q["fact_key"] for q in a2["clarification_requests"]]
+        self.assertNotIn("household_gross_monthly_income", q_keys)
+        self.assertEqual(a2["status"], "completed")
+
+    def test_20_pay_cut_by_half_emits_reduced_hours_and_income_assistance(self):
+        """Commit 2 Item 4: 'My pay was cut by half.' emits reduced_hours fact/triggering_event and income_assistance need."""
+        res = handle_agent_1(_req_a1("My pay was cut by half."))
+        facts = {f["field"]: f["value"] for f in res["result"]["factual_claims"]}
+        needs = res["result"]["proposed_needs"]
+        self.assertEqual(facts.get("employment_status"), "reduced_hours")
+        self.assertIn("reduced_hours", res["result"]["triggering_events"])
+        self.assertTrue(
+            any(n["category"] == "income_assistance" and n["urgency"] == "high" for n in needs)
+        )
+
+    def test_21_need_updates_emitted_only_when_urgency_changes(self):
+        """Commit 2 Item 5: Agent 2 must emit need_updates only when urgency actually changes."""
+        food_need = [
+            {
+                "need_id": "need_001",
+                "category": "food_assistance",
+                "urgency": "high",
+                "urgency_reason": "Food problem reported",
+            }
+        ]
+        facts = [
+            {"field": "zip_code", "value": "95823"},
+            {"field": "household_gross_monthly_income", "value": 900},
+            {"field": "household_size", "value": 3},
+        ]
+        a2_food = handle_agent_2(
+            _req_a2(food_need, facts, ["zip_code", "household_gross_monthly_income", "household_size"])
+        )
+        self.assertEqual(a2_food["result"]["need_updates"], [])
+
+        already_imm = [{"need_id": "need_001", "category": "housing_assistance", "urgency": "immediate"}]
+        a2_imm = handle_agent_2(
+            _req_a2(
+                already_imm,
+                facts + [{"field": "eviction_notice_type", "value": "judgment"}],
+                ["zip_code", "household_gross_monthly_income"],
+            )
+        )
+        self.assertEqual(a2_imm["result"]["need_updates"], [])
+
 
 def _format_a1_readable(label: str, req: dict, out: dict) -> str:
     payload = req["payload"]
@@ -419,6 +469,8 @@ def _format_a2_readable(label: str, req: dict, out: dict) -> str:
             lines.append(
                 f"      - {u['need_id']} -> urgency={u['urgency']} | reason=\"{u['urgency_reason']}\""
             )
+    else:
+        lines.append("  * Need Updates: [] (None)")
     if reqs:
         for idx, q in enumerate(reqs, 1):
             lines.append(
@@ -514,7 +566,7 @@ if __name__ == "__main__":
         )
     )
 
-    print("\nREAL INPUT / OUTPUT VERIFICATION FOR SLAV'S 6 FOLLOW-UP ITEMS\n")
+    print("\nREAL INPUT / OUTPUT VERIFICATION FOR SLAV'S FOLLOW-UP ITEMS\n")
 
     followup_samples = [
         (
@@ -542,6 +594,10 @@ if __name__ == "__main__":
         (
             "Follow-up 6 — Reduced Work Hours Proposes income_assistance (urgency='high')",
             _req_a1("My hours were cut at work last month and I can't pay rent."),
+        ),
+        (
+            "Commit 2 Item 4 — 'My pay was cut by half.' Emits reduced_hours + income_assistance",
+            _req_a1("My pay was cut by half."),
         ),
     ]
     for label, req in followup_samples:
@@ -571,5 +627,19 @@ if __name__ == "__main__":
             "Follow-up 2c — Agent 2 need_updates Escalates Housing to 'immediate'",
             a2_escalate_req,
             handle_agent_2(a2_escalate_req),
+        )
+    )
+    print()
+
+    a2_no_repeat_req = _req_a2(
+        [{"need_id": "need_001", "category": "housing_assistance", "urgency": "high"}],
+        [{"field": "zip_code", "value": "95823"}],
+        ["zip_code", "household_gross_monthly_income"],
+    )
+    print(
+        _format_a2_readable(
+            "Commit 2 Items 3 & 5 — Income Never Repeated & need_updates Empty When Unchanged",
+            a2_no_repeat_req,
+            handle_agent_2(a2_no_repeat_req),
         )
     )

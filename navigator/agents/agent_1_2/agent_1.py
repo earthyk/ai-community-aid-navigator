@@ -194,17 +194,30 @@ RE_JOB_LOSS = re.compile(
     re.IGNORECASE,
 )
 
+RE_REDUCED_HOURS_OR_PAY = re.compile(
+    r"\b(?:"
+    r"hours?\s+cut|cut\s+(?:my\s+|our\s+)?hours?|reduced\s+hours?|"
+    r"(?:hours|shifts?|schedule)\s+(?:were|was|got|are|have\s+been)\s+cut|"
+    r"pay\s+cut|cut\s+(?:my\s+|our\s+)?pay|"
+    r"(?:pay|wage|wages|salary|paycheck)\s+(?:was|were|got|has\s+been)\s+(?:cut|reduced|slashed|dropped)(?:\s+by\s+\w+)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
 RE_INCOME_LOSS_SIGNAL = re.compile(
     r"\b(?:lost\s+(?:my\s+|our\s+)?(?:job|income|paycheck)|laid\s+off|was\s+laid\s+off|unemployed|fired|"
-    r"hours?\s+cut|cut\s+(?:my\s+|our\s+)?hours?|reduced\s+hours?|pay\s+cut|"
+    r"hours?\s+cut|cut\s+(?:my\s+|our\s+)?hours?|reduced\s+hours?|pay\s+cut|cut\s+(?:my\s+|our\s+)?pay|"
+    r"(?:hours|shifts?|schedule)\s+(?:were|was|got|are|have\s+been)\s+cut|"
+    r"(?:pay|wage|wages|salary|paycheck)\s+(?:was|were|got|has\s+been)\s+(?:cut|reduced|slashed|dropped)(?:\s+by\s+\w+)?|"
     r"no\s+(?:other\s+)?income|zero\s+income)\b",
     re.IGNORECASE,
 )
 
 RE_TRIGGERING_EVENT = re.compile(
     r"\b(?:lost\s+(?:my\s+)?job|laid\s+off|was\s+laid\s+off|unemployed|fired|"
-    r"hours?\s+cut|cut\s+(?:my\s+)?hours?|reduced\s+hours?|pay\s+cut|"
+    r"hours?\s+cut|cut\s+(?:my\s+)?hours?|reduced\s+hours?|pay\s+cut|cut\s+(?:my\s+|our\s+)?pay|"
     r"hours\s+(?:were|got|are|have\s+been)\s+cut|cut\s+(?:my|our)?\s*hours|"
+    r"(?:pay|wage|wages|salary|paycheck)\s+(?:was|were|got|has\s+been)\s+(?:cut|reduced|slashed|dropped)(?:\s+by\s+\w+)?|"
     r"let\s+go\s+from|medical\s+emergency|hospitalization|hospital\s+bill|illness|accident|injury|hospital|"
     r"rent\s+increase|unexpected\s+bill|passed\s+away|passed|died|death\s+of|"
     r"lost\s+my\s+(?:husband|wife|partner|spouse)|sole\s+earner|divorce|"
@@ -560,6 +573,18 @@ def _understand_story(
             time_context="at time of report",
         ))
         fact_idx += 1
+        
+    # 4b. Triggering Events: Reduced Hours / Pay Cut
+    reduced_hours_m = RE_REDUCED_HOURS_OR_PAY.search(story)
+    if reduced_hours_m and not job_loss_m:
+        triggering_events.append("reduced_hours")
+        facts.append(_make_fact(
+            "employment_status",
+            "reduced_hours",
+            fact_idx,
+            time_context="current",
+        ))
+        fact_idx += 1
 
     # 5. Triggering Events: Bereavement (Item 10: life circumstance only — NEVER employment_status)
     bereavement_m = RE_BEREAVEMENT.search(story)
@@ -701,14 +726,8 @@ def _understand_story(
 
     # 11. Proposed Needs — Multi-Domain Coverage
     # Item 10 & Follow-up Item 6: Propose income_assistance on income/job loss OR reduced work hours/pay cut
-    re_reduced_hours = re.compile(
-        r"\b(?:hours?\s+cut|cut\s+(?:my\s+|our\s+)?hours?|reduced\s+hours?|pay\s+cut|"
-        r"(?:hours|shifts?|schedule)\s+(?:were|was|got|are|have\s+been)\s+cut|"
-        r"(?:pay|wage|wages|salary|paycheck)\s+(?:was|were|got|has\s+been)\s+(?:cut|reduced|dropped))\b",
-        re.IGNORECASE,
-    )
-    if RE_INCOME_LOSS_SIGNAL.search(story) or re_reduced_hours.search(story):
-        is_reduced_hours = bool(re_reduced_hours.search(story)) and not bool(RE_JOB_LOSS.search(story))
+    if RE_INCOME_LOSS_SIGNAL.search(story) or RE_REDUCED_HOURS_OR_PAY.search(story):
+        is_reduced_hours = bool(RE_REDUCED_HOURS_OR_PAY.search(story)) and not bool(RE_JOB_LOSS.search(story))
         income_quote = extract_full_sentence_quote(
             r"job|laid off|fired|unemployed|hours|paycheck|pay|wage|income",
             story,
@@ -1102,11 +1121,7 @@ def _parse_clarification(
 
     # 2. Triggering Circumstances
     circumstance_val = None
-    if re.search(
-        r"\b(?:hours?\s+cut|cut\s+(?:my\s+)?hours?|reduced\s+hours?|pay\s+cut|"
-        r"hours\s+(?:were|got|are|have\s+been)\s+cut|cut\s+(?:my|our)?\s*hours)\b",
-        ans_lower,
-    ):
+    if RE_REDUCED_HOURS_OR_PAY.search(ans):
         circumstance_val = "reduced_hours"
     elif re.search(r"\b(laid\s+off|lost\s+(?:my\s+)?job|fired|unemployed)\b", ans_lower):
         circumstance_val = "job_loss"
