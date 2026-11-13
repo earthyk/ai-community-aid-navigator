@@ -207,7 +207,7 @@ def handle_agent_2(request_dict: Dict[str, Any]) -> Dict[str, Any]:
                 "applicable_program_ids": [],
                 "verified_rule_ref": None,
                 "necessity_level": "required_for_decision",
-                "can_skip": False,
+                "can_skip": True,
             })
             seen_keys.add("zip_code")
 

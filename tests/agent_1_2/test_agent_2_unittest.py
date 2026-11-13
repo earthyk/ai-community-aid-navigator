@@ -184,7 +184,7 @@ class TestAgent2(unittest.TestCase):
         asked_keys = [r["fact_key"] for r in res["clarification_requests"]]
         self.assertIn("zip_code", asked_keys)
         zip_q = next(r for r in res["clarification_requests"] if r["fact_key"] == "zip_code")
-        self.assertFalse(zip_q["can_skip"])
+        self.assertTrue(zip_q["can_skip"])
 
     def test_missing_household_size_question_when_needed(self):
         """Item 3: Agent 2 must emit a household_size clarification (can_skip=True) when
@@ -254,7 +254,7 @@ class TestAgent2(unittest.TestCase):
             "Expected zip_code to be asked on Turn 2 even without hardship flag",
         )
         zip_q = next(r for r in res["clarification_requests"] if r["fact_key"] == "zip_code")
-        self.assertFalse(zip_q["can_skip"])
+        self.assertTrue(zip_q["can_skip"])
 
     def test_eviction_notice_type_not_reasked_when_in_case_facts(self):
         """Defect fix: if eviction_notice_type is already in case_facts,
