@@ -19,8 +19,85 @@ Contract invariants enforced (§3.1, §3.2, §4.1):
 - Narrative summary: preserves all substantive needs (job loss, rent, food).
 """
 from datetime import date, datetime, timedelta, timezone
+import json
+import os
 import re
-from typing import Any, Dict, List, Optional
+import time
+import urllib.parse
+import urllib.request
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+# ---------------------------------------------------------------------------
+# watsonx.ai constants (env overrides read at call time)
+# ---------------------------------------------------------------------------
+
+DEFAULT_WATSONX_MODEL_ID = "ibm/granite-3-8b-instruct"
+DEFAULT_WATSONX_URL = "https://us-south.ml.cloud.ibm.com"
+DEFAULT_WATSONX_PROJECT_ID = "119ae616-625c-40c5-bd48-c6c7ec63bef7"
+DEFAULT_WATSONX_TIMEOUT = 15
+DEFAULT_WATSONX_MAX_CALLS = 20
+
+# Module-level call counter (reset between test runs by assigning _watsonx_call_count = 0)
+_watsonx_call_count: int = 0
+
+# IAM token cache: (access_token, expires_at_epoch_seconds)
+_iam_token_cache: Tuple[str, float] = ("", 0.0)
+
+# ---------------------------------------------------------------------------
+# Allowed watsonx merge sets (Contract 4.1)
+# ---------------------------------------------------------------------------
+
+_ALLOWED_NEED_CATEGORIES = frozenset({
+    "food_assistance",
+    "housing_assistance",
+    "income_assistance",
+    "utility_assistance",
+    "medical_health_coverage",
+    "debt_hardship",
+    "material_in_kind",
+    "crowdfunding_guidance",
+    "other_unlisted",
+})
+
+_ALLOWED_FACTUAL_FIELDS = frozenset({
+    "zip_code",
+    "household_size",
+    "children_ages",
+    "employment_status",
+    "rent_amount_monthly",
+    "rent_due_date",
+    "cash_on_hand_approx",
+    "has_written_eviction_notice",
+    "household_gross_monthly_income",
+    "eviction_notice_type",
+    "eviction_notice_date",
+    "triggering_circumstances",
+    "rent_arrears_amount",
+})
+
+_ALLOWED_EMPLOYMENT_STATUS = frozenset({
+    "employed",
+    "laid_off",
+    "reduced_hours",
+    "reduced_pay",
+    "self_employed",
+    "unemployed",
+    "bereaved_survivor",
+    "disabled",
+    "retired",
+    "student",
+    "other",
+})
+
+_ALLOWED_EVICTION_NOTICE_TYPE = frozenset({
+    "3_day_pay_or_quit",
+    "30_day",
+    "60_day",
+    "lockout",
+    "writ",
+    "judgment",
+    "other",
+})
 
 # ---------------------------------------------------------------------------
 # Text normalisation
@@ -536,6 +613,221 @@ def _extract_safety_flags(text: str) -> List[Dict[str, Any]]:
             "note": "Threat of physical harm reported" if is_harm_threat else "Life-safety distress signal reported",
         })
     return flags
+
+
+# ---------------------------------------------------------------------------
+# watsonx.ai helpers (standard-library only, injectable http_post_fn for tests)
+# ---------------------------------------------------------------------------
+
+def _get_iam_token(
+    apikey: str,
+    http_post_fn: Optional[Callable] = None,
+) -> str:
+    """Return a cached IAM bearer token, refreshing when < 60s from expiry."""
+    global _iam_token_cache
+    token, expires_at = _iam_token_cache
+    now = time.monotonic()
+    if token and now < expires_at - 60:
+        return token
+
+    iam_url = "https://iam.cloud.ibm.com/identity/token"
+    body = urllib.parse.urlencode({
+        "grant_type": "urn:ibm:params:oauth:grant-type:apikey",
+        "apikey": apikey,
+    }).encode()
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    timeout = int(os.environ.get("WATSONX_TIMEOUT", DEFAULT_WATSONX_TIMEOUT))
+
+    if http_post_fn is not None:
+        resp_bytes = http_post_fn(iam_url, body, headers)
+    else:
+        req = urllib.request.Request(iam_url, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp_bytes = resp.read()
+
+    data = json.loads(resp_bytes)
+    new_token = data["access_token"]
+    expires_in = int(data.get("expires_in", 3600))
+    _iam_token_cache = (new_token, time.monotonic() + expires_in)
+    return new_token
+
+
+def _call_watsonx_chat(
+    story_text: str,
+    http_post_fn: Optional[Callable] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Call watsonx.ai text/chat and return parsed JSON dict from the assistant message,
+    or None on any error (timeout, HTTP error, invalid JSON, call cap reached).
+    Privacy: never logs story_text, prompts, API keys, or model output text.
+    Returns (result_dict_or_None, latency_ms, used_call).
+    """
+    global _watsonx_call_count
+
+    apikey = os.environ.get("WATSONX_APIKEY", "")
+    if not apikey:
+        return None, 0, False
+
+    max_calls = int(os.environ.get("WATSONX_MAX_CALLS", DEFAULT_WATSONX_MAX_CALLS))
+    if _watsonx_call_count >= max_calls:
+        return None, 0, False  # call cap reached
+
+    model_id = os.environ.get("WATSONX_MODEL_ID", DEFAULT_WATSONX_MODEL_ID)
+    wx_url = os.environ.get("WATSONX_URL", DEFAULT_WATSONX_URL).rstrip("/")
+    project_id = os.environ.get("WATSONX_PROJECT_ID", DEFAULT_WATSONX_PROJECT_ID)
+    timeout = int(os.environ.get("WATSONX_TIMEOUT", DEFAULT_WATSONX_TIMEOUT))
+
+    endpoint = (
+        f"{wx_url}/ml/v1/text/chat?version=2024-05-31"
+    )
+
+    system_prompt = (
+        "You are an intake assistant for a community aid navigator. "
+        "Extract structured crisis information from the applicant story. "
+        "Return ONLY a JSON object with two optional keys: "
+        "\"proposed_needs\" (array) and \"factual_claims\" (array). "
+        "Each proposed_need: {category, description, original_quote}. "
+        "Each factual_claim: {field, value}. "
+        "Do NOT include urgency — it is determined by rules. "
+        "Do NOT invent information not stated in the story."
+    )
+
+    payload = {
+        "model_id": model_id,
+        "project_id": project_id,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": story_text},
+        ],
+        "parameters": {
+            "temperature": 0,
+            "max_new_tokens": 512,
+        },
+    }
+    body = json.dumps(payload).encode()
+
+    try:
+        bearer = _get_iam_token(apikey, http_post_fn=http_post_fn)
+    except Exception:
+        return None, 0, False
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {bearer}",
+    }
+
+    t0 = time.monotonic()
+    try:
+        if http_post_fn is not None:
+            resp_bytes = http_post_fn(endpoint, body, headers)
+        else:
+            req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                resp_bytes = resp.read()
+        _watsonx_call_count += 1
+    except Exception:
+        return None, 0, False
+
+    latency_ms = int((time.monotonic() - t0) * 1000)
+
+    try:
+        outer = json.loads(resp_bytes)
+        # watsonx chat response: choices[0].message.content
+        content = outer["choices"][0]["message"]["content"]
+        # Strip markdown fences if present
+        content = re.sub(r"^```(?:json)?\s*", "", content.strip(), flags=re.IGNORECASE)
+        content = re.sub(r"\s*```$", "", content.strip())
+        result = json.loads(content)
+        if not isinstance(result, dict):
+            return None, latency_ms, True
+    except Exception:
+        return None, latency_ms, True
+
+    return result, latency_ms, True
+
+
+def _merge_watsonx_into_result(
+    wx_result: Dict[str, Any],
+    story: str,
+    facts: List[Dict[str, Any]],
+    proposed_needs: List[Dict[str, Any]],
+    need_idx: int,
+    fact_idx: int,
+    urgency_fn: Callable,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, int]:
+    """
+    Merge strictly validated additions from watsonx into rule-derived facts/needs.
+    Never modifies safety_or_official_deadline_flags.
+    Never trusts model urgency — always derives from rules.
+    """
+    existing_fact_fields = {f["field"] for f in facts}
+    existing_need_cats = {n["category"] for n in proposed_needs}
+
+    # Merge proposed_needs
+    wx_needs = wx_result.get("proposed_needs", [])
+    if isinstance(wx_needs, list):
+        for item in wx_needs:
+            if not isinstance(item, dict):
+                continue
+            cat = item.get("category", "")
+            if cat not in _ALLOWED_NEED_CATEGORIES:
+                continue
+            if cat in existing_need_cats:
+                continue
+            original_quote = item.get("original_quote", "")
+            # Grounding check: quote must appear verbatim in story (case-insensitive)
+            if not original_quote or original_quote.strip().lower() not in story.lower():
+                continue
+            desc = item.get("description", cat.replace("_", " ").title())
+            urgency = urgency_fn(cat)
+            proposed_needs.append(_make_need(
+                cat,
+                need_idx,
+                description=str(desc)[:200],
+                original_quote=original_quote,
+                urgency=urgency,
+                urgency_reason=f"Identified by AI enhancement (urgency from rules)",
+            ))
+            existing_need_cats.add(cat)
+            need_idx += 1
+
+    # Merge factual_claims
+    wx_facts = wx_result.get("factual_claims", [])
+    if isinstance(wx_facts, list):
+        for item in wx_facts:
+            if not isinstance(item, dict):
+                continue
+            field = item.get("field", "")
+            if field not in _ALLOWED_FACTUAL_FIELDS:
+                continue
+            if field in existing_fact_fields:
+                continue
+            value = item.get("value")
+            # Type/enum validation per field
+            if field == "employment_status":
+                if value not in _ALLOWED_EMPLOYMENT_STATUS:
+                    continue
+            elif field == "eviction_notice_type":
+                if value not in _ALLOWED_EVICTION_NOTICE_TYPE:
+                    continue
+            elif field == "has_written_eviction_notice":
+                if not isinstance(value, bool):
+                    continue
+            elif field == "household_size":
+                if not isinstance(value, int) or value < 1:
+                    continue
+            elif field == "children_ages":
+                if not isinstance(value, list) or not all(isinstance(a, int) for a in value):
+                    continue
+            elif field in ("rent_amount_monthly", "cash_on_hand_approx",
+                           "household_gross_monthly_income", "rent_arrears_amount"):
+                if not isinstance(value, (int, float)):
+                    continue
+            facts.append(_make_fact(field, value, fact_idx))
+            existing_fact_fields.add(field)
+            fact_idx += 1
+
+    return facts, proposed_needs, need_idx, fact_idx
 
 
 def handle_agent_1(
@@ -1161,6 +1453,53 @@ def _understand_story(
             "quote": story_raw,
             "note": "unspecified_hardship_cause",
         })
+
+    # 14. watsonx.ai enhancement (only when WATSONX_APIKEY is set)
+    apikey = os.environ.get("WATSONX_APIKEY", "")
+    http_post_fn = payload.get("_http_post_fn")  # injectable for tests
+
+    if not apikey:
+        env["is_mock"] = True
+        env["issues"].append({
+            "code": "WATSONX_FALLBACK",
+            "severity": "info",
+            "message": "WATSONX_APIKEY not set; deterministic result used.",
+        })
+    else:
+        wx_result, latency_ms, used_call = _call_watsonx_chat(
+            story_text=story,
+            http_post_fn=http_post_fn,
+        )
+
+        if wx_result is None:
+            # Fallback: timeout, HTTP error, invalid JSON, or cap reached
+            env["is_mock"] = True
+            env["issues"].append({
+                "code": "WATSONX_FALLBACK",
+                "severity": "warning",
+                "message": "watsonx.ai call failed or capped; deterministic result used.",
+            })
+        else:
+            def _default_urgency(category: str) -> str:
+                return "high"
+
+            facts, proposed_needs, need_idx, fact_idx = _merge_watsonx_into_result(
+                wx_result=wx_result,
+                story=story,
+                facts=facts,
+                proposed_needs=proposed_needs,
+                need_idx=need_idx,
+                fact_idx=fact_idx,
+                urgency_fn=_default_urgency,
+            )
+            env["is_mock"] = False
+            env["issues"].append({
+                "code": "WATSONX_USED",
+                "severity": "info",
+                "message": f"watsonx.ai call succeeded.",
+                "call_count": _watsonx_call_count,
+                "latency_ms": latency_ms,
+            })
 
     env["result"] = {
         "narrative_summary": summary,
