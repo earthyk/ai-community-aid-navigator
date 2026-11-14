@@ -350,13 +350,13 @@ class TestSlavTwelveItems(unittest.TestCase):
         self.assertNotIn("household_gross_monthly_income", q_keys)
         self.assertEqual(a2["status"], "completed")
 
-    def test_20_pay_cut_by_half_emits_reduced_hours_and_income_assistance(self):
-        """Commit 2 Item 4: 'My pay was cut by half.' emits reduced_hours fact/triggering_event and income_assistance need."""
+    def test_20_pay_cut_by_half_emits_reduced_pay_and_income_assistance(self):
+        """'My pay was cut by half.' emits reduced_pay fact/triggering_event and income_assistance need."""
         res = handle_agent_1(_req_a1("My pay was cut by half."))
         facts = {f["field"]: f["value"] for f in res["result"]["factual_claims"]}
         needs = res["result"]["proposed_needs"]
-        self.assertEqual(facts.get("employment_status"), "reduced_hours")
-        self.assertIn("reduced_hours", res["result"]["triggering_events"])
+        self.assertEqual(facts.get("employment_status"), "reduced_pay")
+        self.assertIn("reduced_pay", res["result"]["triggering_events"])
         self.assertTrue(
             any(n["category"] == "income_assistance" and n["urgency"] == "high" for n in needs)
         )

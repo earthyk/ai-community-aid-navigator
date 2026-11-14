@@ -194,6 +194,22 @@ RE_JOB_LOSS = re.compile(
     re.IGNORECASE,
 )
 
+RE_REDUCED_HOURS = re.compile(
+    r"\b(?:"
+    r"hours?\s+cut|cut\s+(?:my\s+|our\s+)?hours?|reduced\s+hours?|"
+    r"(?:hours|shifts?|schedule)\s+(?:were|was|got|are|have\s+been)\s+cut"
+    r")\b",
+    re.IGNORECASE,
+)
+
+RE_REDUCED_PAY = re.compile(
+    r"\b(?:"
+    r"pay\s+cut|cut\s+(?:my\s+|our\s+)?pay|"
+    r"(?:pay|wage|wages|salary|paycheck)\s+(?:was|were|got|has\s+been)\s+(?:cut|reduced|slashed|dropped)(?:\s+by\s+\w+)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
 RE_REDUCED_HOURS_OR_PAY = re.compile(
     r"\b(?:"
     r"hours?\s+cut|cut\s+(?:my\s+|our\s+)?hours?|reduced\s+hours?|"
@@ -398,6 +414,23 @@ def _extract_rent_due_date(text: str, ref_date: date) -> Optional[date]:
     return None
 
 
+def _extract_safety_flags(text: str) -> List[Dict[str, Any]]:
+    """Extract safety/distress flags from text. Excludes benign landlord/property context."""
+    flags: List[Dict[str, Any]] = []
+    safety_m = RE_SAFETY_DISTRESS.search(text)
+    if safety_m and not RE_BENIGN_SAFETY_CONTEXT.search(text):
+        quote_str = safety_m.group(0)
+        is_harm_threat = bool(
+            re.search(r"\b(?:threaten|threatened|threatening|hurt|harm|kill|beat|hit|attack|abuse)\b", quote_str, re.IGNORECASE)
+        )
+        flags.append({
+            "type": "safety",
+            "quote": quote_str,
+            "note": "Threat of physical harm reported" if is_harm_threat else "Life-safety distress signal reported",
+        })
+    return flags
+
+
 def handle_agent_1(
     request_dict: Dict[str, Any], ref_date: Optional[date] = None
 ) -> Dict[str, Any]:
@@ -501,17 +534,7 @@ def _understand_story(
         return fallback
 
     # 1. Life-Safety & Distress Detection (Neutral note; Supervisor selects directory contacts)
-    safety_m = RE_SAFETY_DISTRESS.search(story)
-    if safety_m and not RE_BENIGN_SAFETY_CONTEXT.search(story):
-        quote_str = safety_m.group(0)
-        is_harm_threat = bool(
-            re.search(r"\b(?:threaten|threatened|threatening|hurt|harm|kill|beat|hit|attack|abuse)\b", quote_str, re.IGNORECASE)
-        )
-        flags.append({
-            "type": "safety",
-            "quote": quote_str,
-            "note": "Threat of physical harm reported" if is_harm_threat else "Life-safety distress signal reported",
-        })
+    flags.extend(_extract_safety_flags(story))
 
     # 2. ZIP Code Extraction
     zip_m = re.search(r"\b(9\d{4})\b", story)
@@ -575,12 +598,32 @@ def _understand_story(
         fact_idx += 1
         
     # 4b. Triggering Events: Reduced Hours / Pay Cut
-    reduced_hours_m = RE_REDUCED_HOURS_OR_PAY.search(story)
-    if reduced_hours_m and not job_loss_m:
+    reduced_hours_m = RE_REDUCED_HOURS.search(story)
+    reduced_pay_m = RE_REDUCED_PAY.search(story)
+    if reduced_pay_m and not job_loss_m and not reduced_hours_m:
+        triggering_events.append("reduced_pay")
+        facts.append(_make_fact(
+            "employment_status",
+            "reduced_pay",
+            fact_idx,
+            time_context="current",
+        ))
+        fact_idx += 1
+    elif reduced_hours_m and not job_loss_m:
         triggering_events.append("reduced_hours")
         facts.append(_make_fact(
             "employment_status",
             "reduced_hours",
+            fact_idx,
+            time_context="current",
+        ))
+        fact_idx += 1
+    elif reduced_pay_m and not job_loss_m:
+        # Both hours and pay signals present — keep reduced_hours as primary, add reduced_pay too
+        triggering_events.append("reduced_pay")
+        facts.append(_make_fact(
+            "employment_status",
+            "reduced_pay",
             fact_idx,
             time_context="current",
         ))
@@ -727,18 +770,28 @@ def _understand_story(
     # 11. Proposed Needs — Multi-Domain Coverage
     # Item 10 & Follow-up Item 6: Propose income_assistance on income/job loss OR reduced work hours/pay cut
     if RE_INCOME_LOSS_SIGNAL.search(story) or RE_REDUCED_HOURS_OR_PAY.search(story):
-        is_reduced_hours = bool(RE_REDUCED_HOURS_OR_PAY.search(story)) and not bool(RE_JOB_LOSS.search(story))
+        _is_reduced_hours_only = bool(RE_REDUCED_HOURS.search(story)) and not bool(RE_JOB_LOSS.search(story)) and not bool(RE_REDUCED_PAY.search(story))
+        _is_reduced_pay_only = bool(RE_REDUCED_PAY.search(story)) and not bool(RE_JOB_LOSS.search(story)) and not bool(RE_REDUCED_HOURS.search(story))
         income_quote = extract_full_sentence_quote(
             r"job|laid off|fired|unemployed|hours|paycheck|pay|wage|income",
             story,
         )
+        if _is_reduced_pay_only:
+            income_desc = "Pay reduced"
+            income_reason = "Pay reduced"
+        elif _is_reduced_hours_only:
+            income_desc = "Work hours reduced"
+            income_reason = "Work hours reduced"
+        else:
+            income_desc = "Household income lost or severely reduced"
+            income_reason = "Income loss or unemployment reported"
         proposed_needs.append(_make_need(
             "income_assistance",
             need_idx,
-            description="Work hours or pay reduced" if is_reduced_hours else "Household income lost or severely reduced",
+            description=income_desc,
             original_quote=income_quote,
             urgency="high",
-            urgency_reason="Work hours reduced" if is_reduced_hours else "Income loss or unemployment reported",
+            urgency_reason=income_reason,
         ))
         need_idx += 1
 
@@ -1121,7 +1174,11 @@ def _parse_clarification(
 
     # 2. Triggering Circumstances
     circumstance_val = None
-    if RE_REDUCED_HOURS_OR_PAY.search(ans):
+    _ans_has_reduced_pay = bool(RE_REDUCED_PAY.search(ans))
+    _ans_has_reduced_hours = bool(RE_REDUCED_HOURS.search(ans))
+    if _ans_has_reduced_pay and not _ans_has_reduced_hours:
+        circumstance_val = "reduced_pay"
+    elif _ans_has_reduced_hours:
         circumstance_val = "reduced_hours"
     elif re.search(r"\b(laid\s+off|lost\s+(?:my\s+)?job|fired|unemployed)\b", ans_lower):
         circumstance_val = "job_loss"
@@ -1139,11 +1196,12 @@ def _parse_clarification(
             "source": "user_statement",
             "time_context": "recent",
         })
-        if circumstance_val == "reduced_hours":
+        if circumstance_val in ("reduced_hours", "reduced_pay"):
+            emp_val = "reduced_hours" if circumstance_val == "reduced_hours" else "reduced_pay"
             facts.append({
                 "fact_id": _fact_id("employment_status", len(facts) + 1),
                 "field": "employment_status",
-                "value": "reduced_hours",
+                "value": emp_val,
                 "confirmation_status": "proposed",
                 "source": "user_statement",
                 "time_context": "current",
@@ -1179,9 +1237,14 @@ def _parse_clarification(
         elif "household_gross_monthly_income" in keys:
             is_rent_or_due = bool(re.search(r"\b(rent|due|bill|owe|owing|left|account|balance)\b", ans_lower))
             if not is_rent_or_due:
-                num_m = re.search(r"^\$?([0-9,]+)$|\b(?:about|around)\s+\$?([0-9,]+)\b", ans_lower)
+                num_m = re.search(
+                    r"^\$?([0-9,]+)$"
+                    r"|\b(?:about|around)\s+\$?([0-9,]+)\b"
+                    r"|\$?([0-9,]+)\s*(?:dollars?\s*)?(?:a\s+month|per\s+month|monthly)\b",
+                    ans_lower,
+                )
                 if num_m:
-                    raw_num = num_m.group(1) or num_m.group(2)
+                    raw_num = num_m.group(1) or num_m.group(2) or num_m.group(3)
                     try:
                         val = int(raw_num.replace(",", ""))
                         facts.append({
@@ -1324,7 +1387,7 @@ def _parse_clarification(
             ))
 
     # 6b. Follow-up Item 6: Reduced work hours / pay cut in clarification -> propose income_assistance
-    if circumstance_val == "reduced_hours":
+    if circumstance_val in ("reduced_hours", "reduced_pay"):
         existing_needs = payload.get("existing_needs") or []
         existing_need_cats = {n.get("category") for n in existing_needs if isinstance(n, dict)}
         if "income_assistance" not in existing_need_cats and not any(
@@ -1337,14 +1400,23 @@ def _parse_clarification(
                     if m:
                         max_idx = max(max_idx, int(m.group(1)))
             next_idx = max(max_idx, len(existing_needs) + len(proposed_needs)) + 1
+            if circumstance_val == "reduced_pay":
+                need_desc = "Pay reduced"
+                need_reason = "Pay reduced"
+            else:
+                need_desc = "Work hours reduced"
+                need_reason = "Work hours reduced"
             proposed_needs.append(_make_need(
                 "income_assistance",
                 next_idx,
-                description="Work hours or pay reduced",
+                description=need_desc,
                 original_quote=ans,
                 urgency="high",
-                urgency_reason="Work hours reduced",
+                urgency_reason=need_reason,
             ))
+
+    # 7. Safety flags detection in clarification answers
+    safety_flags = _extract_safety_flags(ans)
 
     trig_events: List[str] = []
     for f in facts:
@@ -1357,5 +1429,6 @@ def _parse_clarification(
         "triggering_events": trig_events,
         "clarification_settled": len(facts) > 0,
         "ambiguity_flags": [],
+        "safety_or_official_deadline_flags": safety_flags,
     }
     return env
