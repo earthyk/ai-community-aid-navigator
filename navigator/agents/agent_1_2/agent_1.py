@@ -168,7 +168,14 @@ RE_SAFETY_DISTRESS = re.compile(
     + r"\bunsafe\s+at\s+home\b|"
     + r"\bdanger\s+at\s+home\b|"
     + r"\bmight\s+hurt\s+someone\b|"
-    + r"\bhopeless\b"
+    + r"\bhopeless\b|"
+    + r"\bnot\s+safe\s+at\s+home\b|"
+    + r"\bi['\u2019]?m\s+not\s+safe\b|"
+    + r"\b(?:ex|boyfriend|husband|partner|girlfriend|wife)\s+is\s+threatening\s+(?:me|us)\b|"
+    + r"\bthreatening\s+me\b|"
+    + r"\bscared\s+for\s+my\s+life\b|"
+    + r"\bfear\s+for\s+my\s+life\b|"
+    + r"\bfearing\s+for\s+my\s+life\b"
     + r")",
     re.IGNORECASE,
 )
@@ -194,12 +201,33 @@ RE_JOB_LOSS = re.compile(
     re.IGNORECASE,
 )
 
+RE_REDUCED_HOURS = re.compile(
+    r"\b(?:"
+    r"hours?\s+cut|cut\s+(?:my\s+|our\s+)?hours?|reduced\s+hours?|"
+    r"(?:hours|shifts?|schedule)\s+(?:were|was|got|are|have\s+been)\s+cut"
+    r")\b",
+    re.IGNORECASE,
+)
+
+RE_REDUCED_PAY = re.compile(
+    r"\b(?:"
+    r"pay\s+cut|cut\s+(?:my\s+|our\s+)?pay|"
+    r"(?:pay|wage|wages|salary|paycheck)\s+(?:was|were|got|has\s+been)\s+(?:cut|reduced|slashed|dropped)(?:\s+by\s+\w+)?|"
+    r"reduced\s+(?:my\s+|our\s+)?pay|"
+    r"(?:pay|wage|wages|salary|paycheck)\s+(?:dropped|decreased|went\s+down)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Kept for backward compat — matches either hours or pay reduction
 RE_REDUCED_HOURS_OR_PAY = re.compile(
     r"\b(?:"
     r"hours?\s+cut|cut\s+(?:my\s+|our\s+)?hours?|reduced\s+hours?|"
     r"(?:hours|shifts?|schedule)\s+(?:were|was|got|are|have\s+been)\s+cut|"
     r"pay\s+cut|cut\s+(?:my\s+|our\s+)?pay|"
-    r"(?:pay|wage|wages|salary|paycheck)\s+(?:was|were|got|has\s+been)\s+(?:cut|reduced|slashed|dropped)(?:\s+by\s+\w+)?"
+    r"(?:pay|wage|wages|salary|paycheck)\s+(?:was|were|got|has\s+been)\s+(?:cut|reduced|slashed|dropped)(?:\s+by\s+\w+)?|"
+    r"reduced\s+(?:my\s+|our\s+)?pay|"
+    r"(?:pay|wage|wages|salary|paycheck)\s+(?:dropped|decreased|went\s+down)"
     r")\b",
     re.IGNORECASE,
 )
@@ -209,6 +237,8 @@ RE_INCOME_LOSS_SIGNAL = re.compile(
     r"hours?\s+cut|cut\s+(?:my\s+|our\s+)?hours?|reduced\s+hours?|pay\s+cut|cut\s+(?:my\s+|our\s+)?pay|"
     r"(?:hours|shifts?|schedule)\s+(?:were|was|got|are|have\s+been)\s+cut|"
     r"(?:pay|wage|wages|salary|paycheck)\s+(?:was|were|got|has\s+been)\s+(?:cut|reduced|slashed|dropped)(?:\s+by\s+\w+)?|"
+    r"reduced\s+(?:my\s+|our\s+)?pay|"
+    r"(?:pay|wage|wages|salary|paycheck)\s+(?:dropped|decreased|went\s+down)|"
     r"no\s+(?:other\s+)?income|zero\s+income)\b",
     re.IGNORECASE,
 )
@@ -244,6 +274,19 @@ RE_INCOME_BENEFIT = re.compile(
     r"\b(?:get|gets|receive|receives|collect|draws?)\s+(?:about\s+|around\s+|approx(?:\.)?\s*)?\$?([0-9,]+)"
     r"\s*(?:a\s+month|per\s+month|monthly)?\s*(?:in\s+|from\s+)?"
     r"(?:unemployment|disability|ssdi|ssi|benefits?|assistance)\b",
+    re.IGNORECASE,
+)
+
+# Matches slash-phrasing like $800/month, 800/month, 800/mo
+RE_INCOME_SLASH_MONTHLY = re.compile(
+    r"\$?([0-9,]+)\s*/\s*(?:month|mo)\b",
+    re.IGNORECASE,
+)
+
+# Matches "get/receive N a month" without requiring benefit keyword
+RE_INCOME_GET_MONTHLY = re.compile(
+    r"\b(?:get|gets|receive|receives|bring|brings)\s+(?:about\s+|around\s+|approx(?:\.)?\s*)?\$?([0-9,]+)"
+    r"\s+(?:a\s+month|per\s+month|monthly)\b",
     re.IGNORECASE,
 )
 
@@ -505,7 +548,7 @@ def _understand_story(
     if safety_m and not RE_BENIGN_SAFETY_CONTEXT.search(story):
         quote_str = safety_m.group(0)
         is_harm_threat = bool(
-            re.search(r"\b(?:threaten|threatened|threatening|hurt|harm|kill|beat|hit|attack|abuse)\b", quote_str, re.IGNORECASE)
+            re.search(r"\b(?:threaten|threatened|threatening|hurt|harm|kill|beats?|hits?|attack|abuse)\b", quote_str, re.IGNORECASE)
         )
         flags.append({
             "type": "safety",
@@ -574,17 +617,28 @@ def _understand_story(
         ))
         fact_idx += 1
         
-    # 4b. Triggering Events: Reduced Hours / Pay Cut
-    reduced_hours_m = RE_REDUCED_HOURS_OR_PAY.search(story)
-    if reduced_hours_m and not job_loss_m:
-        triggering_events.append("reduced_hours")
-        facts.append(_make_fact(
-            "employment_status",
-            "reduced_hours",
-            fact_idx,
-            time_context="current",
-        ))
-        fact_idx += 1
+    # 4b. Triggering Events: Reduced Hours and/or Pay Cut (independently flagged)
+    reduced_hours_m = RE_REDUCED_HOURS.search(story)
+    reduced_pay_m = RE_REDUCED_PAY.search(story)
+    if not job_loss_m:
+        if reduced_hours_m:
+            triggering_events.append("reduced_hours")
+            facts.append(_make_fact(
+                "employment_status",
+                "reduced_hours",
+                fact_idx,
+                time_context="current",
+            ))
+            fact_idx += 1
+        if reduced_pay_m:
+            triggering_events.append("reduced_pay")
+            facts.append(_make_fact(
+                "employment_status",
+                "reduced_pay",
+                fact_idx,
+                time_context="current",
+            ))
+            fact_idx += 1
 
     # 5. Triggering Events: Bereavement (Item 10: life circumstance only — NEVER employment_status)
     bereavement_m = RE_BEREAVEMENT.search(story)
@@ -690,7 +744,11 @@ def _understand_story(
             pass
 
     if not income_found:
-        inc_m = RE_INCOME_STANDARD.search(story)
+        inc_m = (
+            RE_INCOME_STANDARD.search(story)
+            or RE_INCOME_GET_MONTHLY.search(story)
+            or RE_INCOME_SLASH_MONTHLY.search(story)
+        )
         if inc_m:
             try:
                 val_str = inc_m.group(1).replace(",", "")
@@ -727,7 +785,18 @@ def _understand_story(
     # 11. Proposed Needs — Multi-Domain Coverage
     # Item 10 & Follow-up Item 6: Propose income_assistance on income/job loss OR reduced work hours/pay cut
     if RE_INCOME_LOSS_SIGNAL.search(story) or RE_REDUCED_HOURS_OR_PAY.search(story):
-        is_reduced_hours = bool(RE_REDUCED_HOURS_OR_PAY.search(story)) and not bool(RE_JOB_LOSS.search(story))
+        _has_job_loss = bool(RE_JOB_LOSS.search(story))
+        _has_reduced_hours = bool(RE_REDUCED_HOURS.search(story)) and not _has_job_loss
+        _has_reduced_pay = bool(RE_REDUCED_PAY.search(story)) and not _has_job_loss
+        if _has_reduced_hours and _has_reduced_pay:
+            _income_desc = "Work hours and pay reduced"
+            _income_reason = "Work hours and pay both reduced"
+        elif _has_reduced_hours or _has_reduced_pay:
+            _income_desc = "Work hours or pay reduced"
+            _income_reason = "Work hours reduced"
+        else:
+            _income_desc = "Household income lost or severely reduced"
+            _income_reason = "Income loss or unemployment reported"
         income_quote = extract_full_sentence_quote(
             r"job|laid off|fired|unemployed|hours|paycheck|pay|wage|income",
             story,
@@ -735,10 +804,10 @@ def _understand_story(
         proposed_needs.append(_make_need(
             "income_assistance",
             need_idx,
-            description="Work hours or pay reduced" if is_reduced_hours else "Household income lost or severely reduced",
+            description=_income_desc,
             original_quote=income_quote,
             urgency="high",
-            urgency_reason="Work hours reduced" if is_reduced_hours else "Income loss or unemployment reported",
+            urgency_reason=_income_reason,
         ))
         need_idx += 1
 
@@ -962,6 +1031,27 @@ def _parse_clarification(
     facts: List[Dict[str, Any]] = []
     ans_lower = ans.lower()
 
+    safety_flags: List[Dict[str, Any]] = []
+    safety_m = RE_SAFETY_DISTRESS.search(ans)
+    if safety_m and not RE_BENIGN_SAFETY_CONTEXT.search(ans):
+        quote_str = safety_m.group(0)
+        is_harm_threat = bool(
+            re.search(
+                r"\b(?:threaten|threatened|threatening|hurt|harm|kill|beats?|hits?|attack|abuse)\b",
+                quote_str,
+                re.IGNORECASE,
+            )
+        )
+        safety_flags.append({
+            "type": "safety",
+            "quote": quote_str,
+            "note": (
+                "Threat of physical harm reported"
+                if is_harm_threat
+                else "Life-safety distress signal reported"
+            ),
+        })
+
     # 1. Eviction Notice & Threat Clarification Follow-ups (Items 1 & 2)
     if (
         "has_written_eviction_notice" in keys
@@ -1121,7 +1211,9 @@ def _parse_clarification(
 
     # 2. Triggering Circumstances
     circumstance_val = None
-    if RE_REDUCED_HOURS_OR_PAY.search(ans):
+    _claric_has_reduced_hours = bool(RE_REDUCED_HOURS.search(ans))
+    _claric_has_reduced_pay = bool(RE_REDUCED_PAY.search(ans))
+    if _claric_has_reduced_hours or _claric_has_reduced_pay:
         circumstance_val = "reduced_hours"
     elif re.search(r"\b(laid\s+off|lost\s+(?:my\s+)?job|fired|unemployed)\b", ans_lower):
         circumstance_val = "job_loss"
@@ -1139,11 +1231,20 @@ def _parse_clarification(
             "source": "user_statement",
             "time_context": "recent",
         })
-        if circumstance_val == "reduced_hours":
+        if _claric_has_reduced_hours:
             facts.append({
                 "fact_id": _fact_id("employment_status", len(facts) + 1),
                 "field": "employment_status",
                 "value": "reduced_hours",
+                "confirmation_status": "proposed",
+                "source": "user_statement",
+                "time_context": "current",
+            })
+        if _claric_has_reduced_pay:
+            facts.append({
+                "fact_id": _fact_id("employment_status", len(facts) + 1),
+                "field": "employment_status",
+                "value": "reduced_pay",
                 "confirmation_status": "proposed",
                 "source": "user_statement",
                 "time_context": "current",
@@ -1162,7 +1263,12 @@ def _parse_clarification(
                 "time_context": None,
             })
     else:
-        inc_m = RE_INCOME_STANDARD.search(ans) or RE_INCOME_BENEFIT.search(ans)
+        inc_m = (
+            RE_INCOME_STANDARD.search(ans)
+            or RE_INCOME_BENEFIT.search(ans)
+            or RE_INCOME_GET_MONTHLY.search(ans)
+            or RE_INCOME_SLASH_MONTHLY.search(ans)
+        )
         if inc_m:
             try:
                 val = int(inc_m.group(1).replace(",", ""))
@@ -1177,6 +1283,8 @@ def _parse_clarification(
             except ValueError:
                 pass
         elif "household_gross_monthly_income" in keys:
+            # Only block bare-number fallback if answer is purely about rent/bills without
+            # any explicit monthly-income phrasing (the explicit-phrasing path above already ran)
             is_rent_or_due = bool(re.search(r"\b(rent|due|bill|owe|owing|left|account|balance)\b", ans_lower))
             if not is_rent_or_due:
                 num_m = re.search(r"^\$?([0-9,]+)$|\b(?:about|around)\s+\$?([0-9,]+)\b", ans_lower)
@@ -1357,5 +1465,6 @@ def _parse_clarification(
         "triggering_events": trig_events,
         "clarification_settled": len(facts) > 0,
         "ambiguity_flags": [],
+        "safety_or_official_deadline_flags": safety_flags,
     }
     return env

@@ -394,5 +394,280 @@ class TestAgent1(unittest.TestCase):
         self.assertTrue(any(f.get("type") == "safety" for f in flags))
 
 
+    # -----------------------------------------------------------------------
+    # Item a — Step 4b: both reduced_hours + reduced_pay flagged simultaneously
+    # -----------------------------------------------------------------------
+
+    def test_both_reduced_hours_and_pay_in_story(self):
+        """When BOTH hours-cut and pay-reduction appear, triggering_events must
+        contain 'reduced_hours' AND 'reduced_pay', and the income_assistance
+        need description must be 'Work hours and pay reduced'."""
+        req = {
+            "request_id": "req-rh-rp-1",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {
+                "story_text": "My hours were cut and my pay was reduced.",
+            },
+        }
+        res = handle_agent_1(req)
+        self.assertEqual(res["status"], "completed")
+        tevents = res["result"].get("triggering_events", [])
+        self.assertIn("reduced_hours", tevents)
+        self.assertIn("reduced_pay", tevents)
+        needs = {n["category"]: n for n in res["result"]["proposed_needs"]}
+        self.assertIn("income_assistance", needs)
+        self.assertEqual(needs["income_assistance"]["description"], "Work hours and pay reduced")
+
+    def test_only_reduced_hours_no_pay(self):
+        """Only hours-cut phrasing → triggering_events has 'reduced_hours' only."""
+        req = {
+            "request_id": "req-rh-only",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {"story_text": "My hours were cut at work."},
+        }
+        res = handle_agent_1(req)
+        tevents = res["result"].get("triggering_events", [])
+        self.assertIn("reduced_hours", tevents)
+        self.assertNotIn("reduced_pay", tevents)
+
+    # -----------------------------------------------------------------------
+    # Item b — Expanded RE_REDUCED_PAY patterns
+    # -----------------------------------------------------------------------
+
+    def test_reduced_pay_they_reduced_my_pay(self):
+        """'They reduced my pay.' must flag reduced_pay in triggering_events,
+        set employment_status='reduced_pay', and propose income_assistance."""
+        req = {
+            "request_id": "req-rp-b1",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {"story_text": "They reduced my pay."},
+        }
+        res = handle_agent_1(req)
+        self.assertEqual(res["status"], "completed")
+        tevents = res["result"].get("triggering_events", [])
+        self.assertIn("reduced_pay", tevents)
+        facts = {f["field"]: f["value"] for f in res["result"]["factual_claims"]}
+        self.assertEqual(facts.get("employment_status"), "reduced_pay")
+        needs_cats = [n["category"] for n in res["result"]["proposed_needs"]]
+        self.assertIn("income_assistance", needs_cats)
+
+    def test_reduced_pay_paycheck_dropped(self):
+        """'My paycheck dropped a lot this month.' must flag reduced_pay,
+        set employment_status='reduced_pay', and propose income_assistance."""
+        req = {
+            "request_id": "req-rp-b2",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {"story_text": "My paycheck dropped a lot this month."},
+        }
+        res = handle_agent_1(req)
+        self.assertEqual(res["status"], "completed")
+        tevents = res["result"].get("triggering_events", [])
+        self.assertIn("reduced_pay", tevents)
+        facts = {f["field"]: f["value"] for f in res["result"]["factual_claims"]}
+        self.assertEqual(facts.get("employment_status"), "reduced_pay")
+        needs_cats = [n["category"] for n in res["result"]["proposed_needs"]]
+        self.assertIn("income_assistance", needs_cats)
+
+    # -----------------------------------------------------------------------
+    # Item d — $800/month slash phrasing for household_gross_monthly_income
+    # -----------------------------------------------------------------------
+
+    def test_income_slash_monthly_story(self):
+        """'$800/month' in a story must set household_gross_monthly_income=800."""
+        req = {
+            "request_id": "req-slash-1",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {"story_text": "We bring in $800/month total."},
+        }
+        res = handle_agent_1(req)
+        facts = {f["field"]: f["value"] for f in res["result"]["factual_claims"]}
+        self.assertEqual(facts.get("household_gross_monthly_income"), 800)
+
+    def test_income_slash_mo_story(self):
+        """'800/mo' in a story must set household_gross_monthly_income=800."""
+        req = {
+            "request_id": "req-slash-2",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {"story_text": "My income is about 800/mo."},
+        }
+        res = handle_agent_1(req)
+        facts = {f["field"]: f["value"] for f in res["result"]["factual_claims"]}
+        self.assertEqual(facts.get("household_gross_monthly_income"), 800)
+
+    def test_income_slash_monthly_clarification(self):
+        """'$800/month' in a clarification answer must set
+        household_gross_monthly_income=800."""
+        req = {
+            "request_id": "req-slash-claric",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "parse_clarification_answer",
+            "payload": {
+                "answer_text": "$800/month",
+                "pending_fact_keys": ["household_gross_monthly_income"],
+            },
+        }
+        res = handle_agent_1(req)
+        facts = {f["field"]: f["value"] for f in res["result"]["factual_claims"]}
+        self.assertEqual(facts.get("household_gross_monthly_income"), 800)
+
+    # -----------------------------------------------------------------------
+    # Item e — income + rent in the same clarification answer
+    # -----------------------------------------------------------------------
+
+    def test_income_and_rent_same_answer_story(self):
+        """'We get 800 a month, rent is 1400' in a story must extract BOTH
+        household_gross_monthly_income=800 AND rent_amount_monthly=1400."""
+        req = {
+            "request_id": "req-inc-rent-s",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {"story_text": "We get 800 a month, rent is 1400."},
+        }
+        res = handle_agent_1(req)
+        facts = {f["field"]: f["value"] for f in res["result"]["factual_claims"]}
+        self.assertEqual(facts.get("household_gross_monthly_income"), 800)
+        self.assertEqual(facts.get("rent_amount_monthly"), 1400)
+
+    def test_income_and_rent_same_clarification_answer(self):
+        """'We get 800 a month, rent is 1400' as a clarification answer must
+        extract BOTH household_gross_monthly_income=800 AND rent_amount_monthly=1400."""
+        req = {
+            "request_id": "req-inc-rent-c",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "parse_clarification_answer",
+            "payload": {
+                "answer_text": "We get 800 a month, rent is 1400",
+                "pending_fact_keys": ["household_gross_monthly_income"],
+            },
+        }
+        res = handle_agent_1(req)
+        facts = {f["field"]: f["value"] for f in res["result"]["factual_claims"]}
+        self.assertEqual(facts.get("household_gross_monthly_income"), 800)
+        self.assertEqual(facts.get("rent_amount_monthly"), 1400)
+
+    # -----------------------------------------------------------------------
+    # Item f — Expanded safety threat patterns
+    # -----------------------------------------------------------------------
+
+    def test_safety_not_safe_at_home(self):
+        """'I'm not safe at home.' / 'not safe at home' must raise a safety flag."""
+        for phrase in [
+            "I'm not safe at home.",
+            "not safe at home",
+        ]:
+            with self.subTest(phrase=phrase):
+                req = {
+                    "request_id": "req-safe-f1",
+                    "run_id": "run-001",
+                    "case_id": "case-001",
+                    "case_version": 1,
+                    "role_id": "agent_1",
+                    "task_type": "understand_story",
+                    "payload": {"story_text": phrase},
+                }
+                res = handle_agent_1(req)
+                flags = res["result"].get("safety_or_official_deadline_flags", [])
+                safety = [f for f in flags if f.get("type") == "safety"]
+                self.assertGreaterEqual(len(safety), 1, f"No safety flag for: {phrase}")
+
+    def test_safety_ex_threatening(self):
+        """'My ex is threatening me.' must raise a safety flag."""
+        req = {
+            "request_id": "req-safe-f2",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {"story_text": "My ex is threatening me."},
+        }
+        res = handle_agent_1(req)
+        flags = res["result"].get("safety_or_official_deadline_flags", [])
+        safety = [f for f in flags if f.get("type") == "safety"]
+        self.assertGreaterEqual(len(safety), 1)
+
+    def test_safety_scared_for_my_life(self):
+        """'I am scared for my life.' must raise a safety flag."""
+        req = {
+            "request_id": "req-safe-f3",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {"story_text": "I am scared for my life."},
+        }
+        res = handle_agent_1(req)
+        flags = res["result"].get("safety_or_official_deadline_flags", [])
+        safety = [f for f in flags if f.get("type") == "safety"]
+        self.assertGreaterEqual(len(safety), 1)
+
+    def test_safety_fear_for_my_life(self):
+        """'I fear for my life.' must raise a safety flag."""
+        req = {
+            "request_id": "req-safe-f4",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {"story_text": "I fear for my life."},
+        }
+        res = handle_agent_1(req)
+        flags = res["result"].get("safety_or_official_deadline_flags", [])
+        safety = [f for f in flags if f.get("type") == "safety"]
+        self.assertGreaterEqual(len(safety), 1)
+
+    def test_safety_partner_hits_me(self):
+        """'I don't feel safe, my partner hits me.' must raise a safety flag
+        (hits word-boundary match)."""
+        req = {
+            "request_id": "req-safe-f5",
+            "run_id": "run-001",
+            "case_id": "case-001",
+            "case_version": 1,
+            "role_id": "agent_1",
+            "task_type": "understand_story",
+            "payload": {"story_text": "I don't feel safe, my partner hits me."},
+        }
+        res = handle_agent_1(req)
+        flags = res["result"].get("safety_or_official_deadline_flags", [])
+        safety = [f for f in flags if f.get("type") == "safety"]
+        self.assertGreaterEqual(len(safety), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
