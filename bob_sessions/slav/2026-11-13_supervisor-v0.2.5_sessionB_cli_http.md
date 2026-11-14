@@ -1,4 +1,18 @@
-> Note added after export (Nov 13, 2026): after this task, the code review found 2 failing tests and 6 more defects; 20 checked fixes (same review method as Session A) were applied with a script; the commit was made only after the full test suite passed. Local paths were removed from this export.
+> Note added after export (Nov 13, 2026; list added Nov 14): after this task, a code review found 2 failing tests and 6 more defects. The checked fixes (20 changes, same review method as Session A) were applied with a script, and the commit was made only after the full test suite passed (467 tests OK). Local paths were removed from this export.
+>
+> The 2 failing tests:
+> - `test_405_get_on_post_path`: `GET /start` answered 404 instead of 405 (code defect, fixed in `http_api.py`).
+> - `test_full_start_answer_confirm`: the test skipped every question, including a required one, so the dialog correctly returned `SKIP_NOT_ALLOWED` (test defect: the test now answers required questions and also checks that the plan has cards and `dialog_version`).
+>
+> The 6 defects:
+> 1. Command line: input files saved by Notepad (UTF-8 with a BOM) could not be read; they are now read as `utf-8-sig`.
+> 2. Command line: a `--case-in` file holding valid JSON that is not an object crashed; it now prints one line and exits with 2.
+> 3. Command line: the summary line printed "0 card(s)" for `needs_confirmation`; it now prints the number of needs.
+> 4. HTTP API: a `Content-Length` that is not a number, or is negative, raised an error; it now answers 400 `BAD_REQUEST`.
+> 5. HTTP API: the internal-error response lacked the standard fields of a failed response; it is now built the same way as every other failure.
+> 6. Tests: the command-line answer and confirm tests left temporary folders behind (fixed in commit `3abaaf2`).
+>
+> New tests for these: files with a BOM, `--case-in` not an object, a bad `Content-Length`, and three tests for the safety notice in responses (contacts shown; a missing directory reported; no flag, no notice).
 
 # Task: Supervisor v0.2.5, Session B — command line, local HTTP API, safety contacts.
 
