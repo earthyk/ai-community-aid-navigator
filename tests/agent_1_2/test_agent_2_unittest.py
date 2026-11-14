@@ -286,7 +286,7 @@ class TestAgent2(unittest.TestCase):
             "eviction_notice_type", asked_keys,
             "eviction_notice_type should not be re-asked when already in case_facts",
         )
-        
+
     def test_all_clarification_requests_use_allowed_necessity_level(self):
         allowed = {"required_for_decision", "helpful"}
         stories = [
@@ -315,6 +315,7 @@ class TestAgent2(unittest.TestCase):
             })
             for req in a2["clarification_requests"]:
                 self.assertIn(req["necessity_level"], allowed)
+
 
 if __name__ == "__main__":
     unittest.main()
