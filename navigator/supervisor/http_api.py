@@ -66,6 +66,8 @@ class _DialogHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             method = path = "-"
             status_code = "-"
+        if getattr(self.server, "quiet", False):
+            return
         print(f"{method} {path} {status_code}", flush=True)
 
     # --- helpers ---
@@ -211,8 +213,9 @@ class _DialogServer(http.server.ThreadingHTTPServer):
     """ThreadingHTTPServer augmented with dialog configuration."""
 
     def __init__(self, server_address, handler_class,
-                 agents, kb_path, zips_path, isolate, allow_origin):
+                 agents, kb_path, zips_path, isolate, allow_origin, quiet=False):
         super().__init__(server_address, handler_class)
+        self.quiet       = quiet          # True: no request log lines (tests)
         self.agents      = agents
         self.kb_path     = kb_path
         self.zips_path   = zips_path
@@ -222,10 +225,11 @@ class _DialogServer(http.server.ThreadingHTTPServer):
 
 def make_server(host="127.0.0.1", port=8765,
                 agents=None, kb_path=None, zips_path=None,
-                isolate=True, allow_origin=None):
+                isolate=True, allow_origin=None, quiet=False):
     """Create and return a configured _DialogServer (not yet started).
 
-    Pass agents=<dict> and port=0 in tests (port 0 → OS assigns a free port).
+    Pass agents=<dict>, port=0 and quiet=True in tests (port 0 → OS assigns a free port;
+    quiet=True → no request log lines).
     """
     return _DialogServer(
         (host, port),
@@ -235,6 +239,7 @@ def make_server(host="127.0.0.1", port=8765,
         zips_path=zips_path,
         isolate=isolate,
         allow_origin=allow_origin,
+        quiet=quiet,
     )
 
 

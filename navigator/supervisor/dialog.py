@@ -221,7 +221,8 @@ def _restore_run(case, agents, kb_path, zips_path, isolate):
 
 
 def _make_case(run, stage, turn, ambiguity_flags, safety_flags,
-               narrative_summary, pending_questions, limitations, skipped_keys=None):
+               narrative_summary, pending_questions, limitations, skipped_keys=None,
+               unread_keys=None):
     """Serialise CaseState + dialog metadata into the opaque case dict."""
     st = run.state
     return {
@@ -242,7 +243,14 @@ def _make_case(run, stage, turn, ambiguity_flags, safety_flags,
         "pending_questions": list(pending_questions or []),
         "limitations":      list(limitations or []),
         "skipped_keys":     list(skipped_keys or []),
+        "unread_keys":      list(unread_keys or []),
     }
+
+
+def _unread_keys(case):
+    """Fact keys whose answer Agent 1 could not read (optional case field; older cases have none)."""
+    keys = case.get("unread_keys") if isinstance(case, dict) else None
+    return [k for k in keys if isinstance(k, str)] if isinstance(keys, list) else []
 
 
 def _failed(case, issues, user_message=None, questions=None):
@@ -445,7 +453,12 @@ def _summary(run, narrative_summary, unknown_fields):
 
 # ---------------------------------------------------------------- plan_by_need builder
 
-def _plan_by_need(plan, needs):
+# Shown first under a need with no card when the person skipped the ZIP: the cause is the
+# unknown location (Agent 3 could not compare service areas), not a proven lack of programs.
+_GEO_GAP_NOTE = "We could not look for local programs for this need without your ZIP code."
+
+
+def _plan_by_need(plan, needs, geography_missing=False):
     """Build plan_by_need rows ordered by the plan's action order.
 
     Row order: position of each need's first released card in plan.action_cards;
@@ -454,6 +467,8 @@ def _plan_by_need(plan, needs):
     Coverage gaps use g["need_id"] and g["note"] (contract §4.8 Agent 8 shape).
     A need with no released card and no coverage gap gets a user-facing message in
     gap_notes and a NEED_NOT_IN_PLAN warning (developer issue).
+    geography_missing=True (the person skipped the ZIP): a need with no released card
+    gets _GEO_GAP_NOTE first; Agent 8's own notes follow it unchanged.
     """
     issues = []
     cards = plan.get("action_cards", [])
@@ -486,10 +501,13 @@ def _plan_by_need(plan, needs):
         need_gaps = gap_notes_by_need.get(nid, [])
 
         if not card_ids and not need_gaps:
-            need_gaps = ["We have not found a verified program for this need yet."]
+            need_gaps = ([] if geography_missing
+                         else ["We have not found a verified program for this need yet."])
             issues.append({"code": "NEED_NOT_IN_PLAN", "severity": "warning",
                            "message": f"Need {nid!r} ({cat}) has no released card and no coverage gap",
                            "related_ref": nid})
+        if not card_ids and geography_missing:
+            need_gaps = [_GEO_GAP_NOTE] + [g for g in need_gaps if g != _GEO_GAP_NOTE]
 
         rows.append({
             "need_id":        nid,
@@ -745,12 +763,13 @@ def _merge_safety_flags(existing, new_flags):
 
 # ---------------------------------------------------------------- unknown facts helpers
 
-def _unknown_facts_with_skipped(state, skipped_keys_set):
+def _unknown_facts_with_skipped(state, skipped_keys_set, unread_keys_set=frozenset()):
     """Build unknown list: facts that were asked but not settled.
 
     skipped_keys_set: set of fact keys the user explicitly skipped (from case["skipped_keys"]).
     Keys in already_asked but not in case_facts are listed; why = "skipped" if in
-    skipped_keys_set, else "not_answered".
+    skipped_keys_set, "not_understood" if answered but Agent 1 found no value in the
+    answer (unread_keys_set), else "not_answered".
     """
     fact_fields = {f.get("field") for f in state.case_facts}
     result = []
@@ -758,7 +777,12 @@ def _unknown_facts_with_skipped(state, skipped_keys_set):
     for fk in state.already_asked:
         if fk not in fact_fields and fk not in seen:
             seen.add(fk)
-            why = "skipped" if fk in skipped_keys_set else "not_answered"
+            if fk in skipped_keys_set:
+                why = "skipped"
+            elif fk in unread_keys_set:
+                why = "not_understood"
+            else:
+                why = "not_answered"
             result.append({"field": fk, "why": why})
     return result
 
@@ -871,6 +895,7 @@ def answer(case, answers, agents=None, kb_path=None, zips_path=None, isolate=Fal
         pending_questions = case.get("pending_questions", [])  # full Question dicts
         old_turn          = case.get("turn", 1)
         skipped_keys      = list(case.get("skipped_keys", []))
+        unread_keys       = _unread_keys(case)
 
         # Build a map question_id -> pending_question (full dict)
         pq_by_id = {pq["question_id"]: pq for pq in pending_questions}
@@ -928,10 +953,14 @@ def answer(case, answers, agents=None, kb_path=None, zips_path=None, isolate=Fal
                     "safety_or_official_deadline_flags") or []
                 safety_flags = _merge_safety_flags(safety_flags, new_safety)
                 _add_to_already_asked(st, fact_key)
+                if (fact_key not in {f.get("field") for f in st.case_facts}
+                        and fact_key not in unread_keys):
+                    unread_keys.append(fact_key)   # answered, but no value could be read
 
         # ZIP skipped → add geography limitation
         zip_known = any(f.get("field") == "zip_code" for f in st.case_facts)
-        if not zip_known and "zip_code" in st.already_asked:
+        geography_missing = not zip_known and "zip_code" in st.already_asked
+        if geography_missing:
             if _GEO_LIMITATION not in limitations:
                 limitations.append(_GEO_LIMITATION)
 
@@ -946,11 +975,12 @@ def answer(case, answers, agents=None, kb_path=None, zips_path=None, isolate=Fal
                 "code": "QUESTION_LOOP_GUARD", "severity": "warning",
                 "message": f"Reached {LOOP_GUARD_TURNS} answered turns; going to summary",
                 "related_ref": None})
-            unknown = _unknown_facts_with_skipped(st, set(skipped_keys))
+            unknown = _unknown_facts_with_skipped(st, set(skipped_keys), set(unread_keys))
             summ = _summary(run, narrative_summary, unknown)
             case_out = _make_case(run, "awaiting_confirmation", answered_turns,
                                   ambiguity_flags, safety_flags, narrative_summary,
-                                  [], limitations, skipped_keys=skipped_keys)
+                                  [], limitations, skipped_keys=skipped_keys,
+                                  unread_keys=unread_keys)
             _loop_notice = _safety_notice(safety_flags)
             if _loop_notice is not None:
                 run.supervisor_issues += _emergency_contacts()[1]
@@ -968,15 +998,17 @@ def answer(case, answers, agents=None, kb_path=None, zips_path=None, isolate=Fal
             case_out = _make_case(run, "clarifying", new_turn,
                                   ambiguity_flags, safety_flags, narrative_summary,
                                   questions,   # full Question dicts
-                                  limitations, skipped_keys=skipped_keys)
+                                  limitations, skipped_keys=skipped_keys,
+                                  unread_keys=unread_keys)
             return _clarification_response(run, questions, case_out, new_turn,
                                            limitations, safety_notice)
         else:
-            unknown = _unknown_facts_with_skipped(st, set(skipped_keys))
+            unknown = _unknown_facts_with_skipped(st, set(skipped_keys), set(unread_keys))
             summ = _summary(run, narrative_summary, unknown)
             case_out = _make_case(run, "awaiting_confirmation", new_turn - 1,
                                   ambiguity_flags, safety_flags, narrative_summary,
-                                  [], limitations, skipped_keys=skipped_keys)
+                                  [], limitations, skipped_keys=skipped_keys,
+                                  unread_keys=unread_keys)
             return _confirmation_response(run, case_out, new_turn - 1,
                                           limitations, safety_notice, summ)
 
@@ -1073,7 +1105,8 @@ def confirm(case, corrections=None, rejected_need_ids=None, added_needs=None,
 
         # Geography missing warning (if ZIP was never provided)
         zip_known = any(f.get("field") == "zip_code" for f in st.case_facts)
-        if not zip_known and "zip_code" in st.already_asked:
+        geography_missing = not zip_known and "zip_code" in st.already_asked
+        if geography_missing:
             run.supervisor_issues.append({
                 "code": "GEOGRAPHY_MISSING", "severity": "warning",
                 "message": "No ZIP code was provided; local program search may be incomplete",
@@ -1103,7 +1136,8 @@ def confirm(case, corrections=None, rejected_need_ids=None, added_needs=None,
         # Case for the completed response (stage "completed")
         case_out = _make_case(run, "completed", case.get("turn", 0),
                               ambiguity_flags, safety_flags, narrative_summary,
-                              [], limitations, skipped_keys=list(skipped_keys))
+                              [], limitations, skipped_keys=list(skipped_keys),
+                              unread_keys=_unread_keys(case))
 
         if outcome != "completed" or plan is None:
             # Return failed with the ORIGINAL case (stage awaiting_confirmation) so the app can retry
@@ -1117,7 +1151,7 @@ def confirm(case, corrections=None, rejected_need_ids=None, added_needs=None,
                 "Planning could not be completed. Your answers are saved. Please try again.")
 
         # Build plan_by_need (confirmed needs only), only for a completed plan
-        pbn, pbn_issues = _plan_by_need(plan, confirmed_needs)
+        pbn, pbn_issues = _plan_by_need(plan, confirmed_needs, geography_missing=geography_missing)
         run.supervisor_issues += pbn_issues
 
         return {

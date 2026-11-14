@@ -46,7 +46,8 @@ def _post(url, body):
         with urllib.request.urlopen(req) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode("utf-8"))
+        with e:              # close the error response (Python 3.15 warns otherwise)
+            return e.code, json.loads(e.read().decode("utf-8"))
 
 
 def _get(url, headers=None):
@@ -55,7 +56,8 @@ def _get(url, headers=None):
         with urllib.request.urlopen(req) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode("utf-8"))
+        with e:              # close the error response (Python 3.15 warns otherwise)
+            return e.code, json.loads(e.read().decode("utf-8"))
 
 
 def _request(url, method, body=None, headers=None):
@@ -70,7 +72,8 @@ def _request(url, method, body=None, headers=None):
         with urllib.request.urlopen(req) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode("utf-8"))
+        with e:              # close the error response (Python 3.15 warns otherwise)
+            return e.code, json.loads(e.read().decode("utf-8"))
 
 
 class TestHttpAPI(unittest.TestCase):
@@ -84,6 +87,7 @@ class TestHttpAPI(unittest.TestCase):
             zips_path=FIXTURE_ZIPS,
             isolate=False,
             allow_origin=None,
+            quiet=True,
         )
         _, cls.port = cls.server.server_address
         cls.base = f"http://127.0.0.1:{cls.port}"
@@ -260,6 +264,7 @@ class TestHttpAPICORS(unittest.TestCase):
             zips_path=FIXTURE_ZIPS,
             isolate=False,
             allow_origin="https://example.com",
+            quiet=True,
         )
         _, cls.port = cls.server.server_address
         cls.base = f"http://127.0.0.1:{cls.port}"

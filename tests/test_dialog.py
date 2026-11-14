@@ -856,6 +856,134 @@ class TestPlanByNeed(unittest.TestCase):
         self.assertNotIn("need_002", pbn_ids)
 
 
+class TestGeoGapNote(unittest.TestCase):
+    """plan_by_need: a skipped ZIP is named as the cause under needs with no card."""
+
+    NEEDS = [{"need_id": "need_001", "category": "food_assistance", "urgency": "high"},
+             {"need_id": "need_002", "category": "income_assistance", "urgency": "high"}]
+    AGENT8_NOTE = "We have not found a verified program for this need yet."
+
+    def _plan(self, gaps, cards=()):
+        return {"action_cards": list(cards), "coverage_gaps": gaps}
+
+    def _row(self, rows, nid):
+        return next(r for r in rows if r["need_id"] == nid)
+
+    def test_zip_skipped_note_first_then_agent8_note(self):
+        plan = self._plan([{"need_id": "need_001", "note": self.AGENT8_NOTE}])
+        rows, _ = D._plan_by_need(plan, self.NEEDS[:1], geography_missing=True)
+        self.assertEqual(self._row(rows, "need_001")["gap_notes"], [D._GEO_GAP_NOTE, self.AGENT8_NOTE])
+
+    def test_zip_skipped_no_gap_gets_only_the_zip_note(self):
+        rows, issues = D._plan_by_need(self._plan([]), self.NEEDS[:1], geography_missing=True)
+        self.assertEqual(self._row(rows, "need_001")["gap_notes"], [D._GEO_GAP_NOTE])
+        self.assertIn("NEED_NOT_IN_PLAN", [i["code"] for i in issues])
+
+    def test_need_with_a_card_gets_no_zip_note(self):
+        card = {"card_id": "card_01", "related_need_ids": ["need_002"], "order_group": "first"}
+        rows, _ = D._plan_by_need(self._plan([], [card]), self.NEEDS, geography_missing=True)
+        self.assertEqual(self._row(rows, "need_002")["gap_notes"], [])
+        self.assertEqual(self._row(rows, "need_001")["gap_notes"], [D._GEO_GAP_NOTE])
+
+    def test_zip_known_unchanged(self):
+        plan = self._plan([{"need_id": "need_001", "note": self.AGENT8_NOTE}])
+        rows, _ = D._plan_by_need(plan, self.NEEDS[:1])
+        self.assertEqual(self._row(rows, "need_001")["gap_notes"], [self.AGENT8_NOTE])
+        rows, _ = D._plan_by_need(self._plan([]), self.NEEDS[:1])
+        self.assertEqual(self._row(rows, "need_001")["gap_notes"], [self.AGENT8_NOTE])
+
+    def test_confirm_after_skipped_zip_names_the_zip(self):
+        def agent_8_no_cards(req):  # Agent 8 finds nothing: every need becomes a coverage gap
+            r = agent_8(req)
+            res = r["result"]
+            nids = sorted({n for c in res["action_cards"] for n in c["related_need_ids"]})
+            res["action_cards"] = []
+            res["coverage_gaps"] = [{"need_id": n, "note": "No program found."} for n in nids]
+            return r
+        agents = _agents(agent_8=agent_8_no_cards)
+        r = _start(agents=agents)
+        turns = 0
+        while r["status"] == "needs_clarification" and turns < 8:
+            turns += 1
+            items = []
+            for q in r["questions"]:
+                if q["can_skip"]:
+                    items.append({"question_id": q["question_id"], "skipped": True})
+                else:
+                    items.append({"question_id": q["question_id"], "answer_text": "0"})
+            r = _answer(r["case"], items, agents=agents)
+        self.assertEqual(r["status"], "needs_confirmation")
+        c = _confirm(r["case"], agents=agents)
+        self.assertEqual(c["status"], "completed")
+        empty = [row for row in c["plan_by_need"] if not row["card_ids"]]
+        self.assertTrue(empty)
+        for row in empty:
+            self.assertEqual(row["gap_notes"], [D._GEO_GAP_NOTE, "No program found."])
+
+
+class TestUnreadAnswer(unittest.TestCase):
+    """An answer Agent 1 cannot read: listed in unknown as not_understood, never asked again."""
+
+    UNREADABLE = "something we cannot read"
+
+    def _agents(self):
+        def agent_1_blind(req):  # finds no value in the unreadable answer
+            r = agent_1_dialog(req)
+            if (req.get("task_type") == "parse_clarification_answer"
+                    and req["payload"].get("answer_text") == self.UNREADABLE):
+                r["result"]["factual_claims"] = []
+            return r
+        return _agents(agent_1=agent_1_blind)
+
+    def _run_to_summary(self, drop_unread_key=False):
+        agents = self._agents()
+        r = _start(agents=agents)
+        first = r["questions"][0]["fact_key"]
+        asked = []
+        while r["status"] == "needs_clarification" and len(asked) < 20:
+            items = []
+            for q in r["questions"]:
+                asked.append(q["fact_key"])
+                if q["fact_key"] == first:
+                    items.append({"question_id": q["question_id"], "answer_text": self.UNREADABLE})
+                elif q["can_skip"]:
+                    items.append({"question_id": q["question_id"], "skipped": True})
+                else:
+                    items.append({"question_id": q["question_id"], "answer_text": "0"})
+            case = r["case"]
+            if drop_unread_key:
+                case = {k: v for k, v in case.items() if k != "unread_keys"}
+            r = _answer(case, items, agents=agents)
+        return first, asked, r
+
+    def test_unreadable_answer_is_not_understood(self):
+        first, asked, r = self._run_to_summary()
+        self.assertEqual(r["status"], "needs_confirmation")
+        why = {u["field"]: u["why"] for u in r["summary"]["unknown"]}
+        self.assertEqual(why.get(first), "not_understood")
+        self.assertEqual(asked.count(first), 1)          # never asked again
+        self.assertIn(first, r["case"]["unread_keys"])
+
+    def test_skipped_and_empty_keep_their_reasons(self):
+        st = type("S", (), {})()
+        st.case_facts = [{"field": "zip_code", "value": "95823"}]
+        st.already_asked = ["zip_code", "household_size", "household_gross_monthly_income", "rent_amount_monthly"]
+        out = D._unknown_facts_with_skipped(st, {"household_size"}, {"household_gross_monthly_income"})
+        self.assertEqual(out, [{"field": "household_size", "why": "skipped"},
+                               {"field": "household_gross_monthly_income", "why": "not_understood"},
+                               {"field": "rent_amount_monthly", "why": "not_answered"}])
+
+    def test_old_case_without_unread_keys_still_works(self):
+        first, asked, r = self._run_to_summary(drop_unread_key=True)
+        self.assertEqual(r["status"], "needs_confirmation")
+
+    def test_confirm_keeps_unread_keys(self):
+        first, asked, r = self._run_to_summary()
+        c = _confirm(r["case"], agents=self._agents())
+        self.assertEqual(c["status"], "completed")
+        self.assertIn(first, c["case"]["unread_keys"])
+
+
 class TestLocale(unittest.TestCase):
     """locale: passed to Agent 1 (understand_story); checked before any agent call."""
 

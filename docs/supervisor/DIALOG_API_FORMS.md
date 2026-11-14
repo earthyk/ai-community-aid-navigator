@@ -1,6 +1,7 @@
 # Supervisor dialog mode — call and response forms (for the App Layer)
 
-Version 0.2.4 (Nov 14, 2026) · built on v0.2.3 · owner: Slav
+Version 0.2.5 (Nov 14, 2026) · built on v0.2.4 · owner: Slav
+v0.2.5: when the person skipped the ZIP, a need with no card names the cause first in `gap_notes`: "We could not look for local programs for this need without your ZIP code." (§4.3). `unknown[].why` has a third value, `not_understood` (§4.2): the person answered, but no value could be read. The HTTP server takes `quiet` in `make_server` (tests only). No field was renamed or removed. 485 tests.
 v0.2.4: `locale` now works in all three ways of calling `start` (the HTTP API and the command line passed it on to nobody before) and is checked: anything other than a language tag such as `en-US` gives `failed` `LOCALE_INVALID` (§4.1, §4.4). `--allow-origin` takes an origin such as `http://localhost:3000` (§2). No response field changed; `dialog_version` stays `"0.2"`. 475 tests.
 v0.2.3: matches the code as built (Supervisor v0.2.5, branch `slav/supervisor-v0.2.5`, 467 tests). Added: the command line (§2), HTTP 405 and the `BAD_REQUEST` body (§2), the type rules for corrections and the code `FACT_VALUE_INVALID` (§4.3), the verified 9-1-1 and 988 contacts in `safety_notice` and the code `SAFETY_CONTACT_UNVERIFIED` (§5), `skipped_keys`, `limitations` and full questions in the `case` (§6). No response field was renamed or removed; `dialog_version` stays `"0.2"`.
 v0.2.2: the county comes from the verified county ZIP list in the KB (option `--zips` / `zips_path`); three more developer codes (`COUNTY_FROM_ZIP_LIST`, `ZIP_LIST_UNAVAILABLE`, `ANSWER_FACT_INVALID`). No field of any call or response changed; `dialog_version` stays `"0.2"`.
@@ -165,7 +166,7 @@ or `{"question_id": "q2-1", "skipped": true}`.
   "case": {"...": "pass back unchanged"}
 }
 ```
-`unknown` lists facts that were asked and skipped or not settled: `{field, label, why: "skipped" | "not_answered"}`.
+`unknown` lists facts that were asked and skipped or not settled: `{field, label, why: "skipped" | "not_answered" | "not_understood"}`. `not_understood`: the person answered, but no value could be read from the answer; the question is not asked again, so the summary is where the person enters the value (as a correction).
 
 ### 4.3 `confirm`
 **In:**
@@ -212,7 +213,7 @@ or `{"question_id": "q2-1", "skipped": true}`.
 }
 ```
 - `plan` is the plan of `run_report.json` (contract §4.8 plus `contacts[]`).
-- `plan_by_need`: rows follow the plan's own order (the position of each need's first card); needs with no card come last. **Urgency is a label only** (Julia, Nov 11). A card serving two needs appears under both. `gap_notes` explain a need with no verified program. A need with neither card nor gap gets, in its row, the `gap_notes` sentence "We have not found a verified program for this need yet." for the user, plus the warning `NEED_NOT_IN_PLAN` for developers. It never disappears, and nothing promises that a search is still going on (Julia).
+- `plan_by_need`: rows follow the plan's own order (the position of each need's first card); needs with no card come last. **Urgency is a label only** (Julia, Nov 11). A card serving two needs appears under both. `gap_notes` explain a need with no verified program. A need with neither card nor gap gets, in its row, the `gap_notes` sentence "We have not found a verified program for this need yet." for the user, plus the warning `NEED_NOT_IN_PLAN` for developers. It never disappears, and nothing promises that a search is still going on (Julia). When the person skipped the ZIP, a need with no card gets first the sentence "We could not look for local programs for this need without your ZIP code." and then Agent 8's own notes: the cause is the unknown location, not a proven lack of programs. A need with neither card nor gap then gets only this sentence.
 - `withheld_cards`: cards the final check did not release; show "We could not verify this option yet", not the technical reason.
 - `progress_status` starts as `not_started`; only the user changes it (six statuses, contract §3.6). Storing progress between visits comes with Case State (§6).
 

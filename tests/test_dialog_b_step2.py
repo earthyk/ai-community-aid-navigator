@@ -3,6 +3,8 @@
 Run from the repo root:  python -m unittest tests.test_dialog_b_step2 -v
 Uses agents_fake_dialog.json and --no-isolate.
 """
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -48,6 +50,8 @@ class TestMainStart(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.enterContext(contextlib.redirect_stdout(io.StringIO()))   # keep the test run quiet
+        self.enterContext(contextlib.redirect_stderr(io.StringIO()))
 
     def test_start_produces_response_file(self):
         flags, out = _shared_args(self.tmp)
@@ -116,6 +120,8 @@ class TestMainAnswerConfirm(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.enterContext(contextlib.redirect_stdout(io.StringIO()))   # keep the test run quiet
+        self.enterContext(contextlib.redirect_stderr(io.StringIO()))
 
     def _run_start(self):
         """Run start and return (resp, out_path)."""

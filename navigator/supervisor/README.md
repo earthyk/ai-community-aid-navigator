@@ -23,14 +23,14 @@ Owner: Slav (Supervisor / Orchestrator and integration). Contract: `docs/contrac
 | `run.py` | the runner, `_execute_body()` / `_plan_body()` / `_input_error()`, `merge_repaired_plan()` helper, and `agents.json` loader (clear one-line errors, exit code 2) |
 | `dialog.py` | dialog mode: `start()`, `answer()`, `confirm()`, the Situation Summary, `plan_by_need`, the safety notice with verified 9-1-1 and 988 contacts, and the command line (`main()`) |
 | `http_api.py` | local HTTP API over the three dialog calls (standard library `http.server`) |
-| `../../tests/` | 241 Supervisor tests (the full suite runs 475): checks, builders, full cycle on fake agents, broken and hung agents, privacy, repair rounds, ref_date, S1 per-role fields, final_validation, ZIP list, dialog mode, command line, HTTP API |
+| `../../tests/` | 250 Supervisor tests (the full suite runs 485): checks, builders, full cycle on fake agents, broken and hung agents, privacy, repair rounds, ref_date, S1 per-role fields, final_validation, ZIP list, dialog mode, command line, HTTP API |
 | `../../tests/fixtures/kb_supervisor_fixture.json` | Frozen KB copy for Supervisor tests (Nov 6, 2026). Tests use this, not the live KB. |
 | `../../tests/fixtures/zips_fixture.json`, `emergency_fixture.json` | Frozen ZIP list and emergency directory for tests. |
 
 ## How to run (from the repository root)
 
 ```
-python -I -m unittest discover -s tests -t .                               # all tests (475)
+python -I -m unittest discover -s tests -t .                               # all tests (485)
 python -m navigator.supervisor.run --agents tests/agents_fake.json --kb tests/fixtures/kb_supervisor_fixture.json               # full cycle on fake agents
 python -m navigator.supervisor.run --agents tests/agents_fake.json --kb tests/fixtures/kb_supervisor_fixture.json --demo-broken   # the Supervisor rejects sample 03
 python -m navigator.supervisor.run --agents agents.json                    # the team's components
@@ -53,7 +53,7 @@ Supervisor tests use the frozen fixture `tests/fixtures/kb_supervisor_fixture.js
 
 ## Dialog mode: how to run and connect (v0.2.5)
 
-Dialog mode runs the Navigator as a conversation: the user tells their story, answers a few questions, checks the Situation Summary, then gets the action plan. The full call and response forms are in `docs/supervisor/DIALOG_API_FORMS.md`.
+Dialog mode runs the Navigator as a conversation: the user tells their story, answers a few questions, checks the Situation Summary, then gets the action plan. The full call and response forms are in `docs/supervisor/DIALOG_API_FORMS.md`. Real requests and responses from a run on the team's agents, with a table of measured results, are in `docs/examples/dialog/` (`RESULTS.md`); `tools/run_dialog_scenarios.py` produces them again.
 
 **Requirements:** Python 3.11 or newer (tested on 3.12), standard library only, nothing to install. The dialog writes no files and keeps no database; no internet is needed.
 
@@ -100,7 +100,8 @@ def call(path, body):
         with urllib.request.urlopen(req, timeout=120) as r:
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:          # 400, 404, 405, 413 also carry a JSON body
-        return json.loads(e.read().decode("utf-8"))
+        with e:
+            return json.loads(e.read().decode("utf-8"))
 
 r = call("/start", {"story_text": "I have problems with housing and food. I need help."})
 while r["status"] == "needs_clarification":
@@ -137,8 +138,8 @@ All three take `--agents`, `--kb`, `--zips` and `--no-isolate`; `start` also tak
 ### What to show the user
 
 - `questions[]`: show `text`; one answer field per question; a "Skip" button when `can_skip` is true. Send an item for every question of the turn. A required question (`can_skip: false`) that is skipped comes back as `failed` `SKIP_NOT_ALLOWED` with the same questions.
-- `summary`: `narrative`; the `needs` (each can be removed); the `facts` with `label` and `display_value` (each can be corrected; facts the person mentioned beyond a question are here too); the `unknown` list; an "Add a need" option.
-- `plan.action_cards` in their order, and `plan_by_need` for a "by need" view (urgency is a label, not the order). Show each row's `gap_notes`: a need with no verified program keeps its row with a plain explanation. `withheld_cards`: "We could not verify this option yet".
+- `summary`: `narrative`; the `needs` (each can be removed); the `facts` with `label` and `display_value` (each can be corrected; facts the person mentioned beyond a question are here too); the `unknown` list (each with `why`: `skipped`, `not_answered`, or `not_understood` — the person answered, but no value could be read, so ask them to enter it here); an "Add a need" option.
+- `plan.action_cards` in their order, and `plan_by_need` for a "by need" view (urgency is a label, not the order). Show each row's `gap_notes`: a need with no verified program keeps its row with a plain explanation; when the ZIP was skipped, the first note says that local programs could not be searched without it. `withheld_cards`: "We could not verify this option yet".
 - `limitations[]`: plain sentences (for example when the ZIP was skipped); show them near the plan.
 - `safety_notice`: when not null, show it above everything, with its `contacts` (verified 9-1-1 and 988 from the emergency directory). The app shows 9-1-1 and 988 at all times anyway.
 - `failed`: show `user_message` and let the user retry with the `case` from the same response. `issues` are for developers only.
