@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta, timezone
 import json
 import os
 import re
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -31,16 +32,92 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # watsonx.ai constants (env overrides read at call time)
 # ---------------------------------------------------------------------------
 
-DEFAULT_WATSONX_MODEL_ID = "ibm/granite-3-8b-instruct"
+DEFAULT_WATSONX_MODEL_ID = "ibm/granite-4-h-small"
 DEFAULT_WATSONX_URL = "https://us-south.ml.cloud.ibm.com"
 DEFAULT_WATSONX_PROJECT_ID = "119ae616-625c-40c5-bd48-c6c7ec63bef7"
 DEFAULT_WATSONX_TIMEOUT = 15
 DEFAULT_WATSONX_MAX_CALLS = 20
 
-# Module-level call counter (reset between test runs by assigning _watsonx_call_count = 0)
+# ---------------------------------------------------------------------------
+# Item 4: Cross-process persistent state (call counter + IAM token cache)
+# ---------------------------------------------------------------------------
+# Overridable in tests via os.environ["WATSONX_STATE_FILE"].
+# Default: <tempdir>/watsonx_agent1_state.json
+
+def _state_file_path() -> str:
+    return os.environ.get(
+        "WATSONX_STATE_FILE",
+        os.path.join(tempfile.gettempdir(), "watsonx_agent1_state.json"),
+    )
+
+
+def _read_state() -> Dict[str, Any]:
+    """Read the persisted state dict; return empty defaults on any error."""
+    try:
+        path = _state_file_path()
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except Exception:
+        return {}
+
+
+def _write_state(data: Dict[str, Any]) -> None:
+    """Atomically write the state dict to the state file."""
+    path = _state_file_path()
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _get_call_count() -> int:
+    return int(_read_state().get("call_count", 0))
+
+
+def _increment_call_count() -> int:
+    """Increment and persist call counter; return new value."""
+    state = _read_state()
+    new_count = int(state.get("call_count", 0)) + 1
+    state["call_count"] = new_count
+    _write_state(state)
+    return new_count
+
+
+def _get_persisted_iam_token() -> Tuple[str, float]:
+    """Return (token, expires_at_monotonic_approx) from persisted state."""
+    state = _read_state()
+    token = state.get("iam_token", "")
+    # We store wall-clock expiry; convert to monotonic-equivalent offset
+    wall_expires = float(state.get("iam_token_wall_expires", 0.0))
+    if not token or wall_expires == 0.0:
+        return ("", 0.0)
+    now_wall = time.time()
+    now_mono = time.monotonic()
+    # Map wall-clock expiry to an equivalent monotonic deadline
+    mono_expires = now_mono + (wall_expires - now_wall)
+    return (token, mono_expires)
+
+
+def _persist_iam_token(token: str, expires_in: int) -> None:
+    """Persist IAM token with wall-clock expiry so other processes can reuse it."""
+    state = _read_state()
+    state["iam_token"] = token
+    state["iam_token_wall_expires"] = time.time() + expires_in
+    _write_state(state)
+
+
+# Module-level call counter — kept for backward compatibility with tests that
+# reset a1_mod._watsonx_call_count directly (single-process tests).
 _watsonx_call_count: int = 0
 
-# IAM token cache: (access_token, expires_at_epoch_seconds)
+# IAM token cache: (access_token, expires_at_monotonic) — single-process cache.
+# Cross-process caching uses _get_persisted_iam_token / _persist_iam_token.
 _iam_token_cache: Tuple[str, float] = ("", 0.0)
 
 # ---------------------------------------------------------------------------
@@ -619,16 +696,92 @@ def _extract_safety_flags(text: str) -> List[Dict[str, Any]]:
 # watsonx.ai helpers (standard-library only, injectable http_post_fn for tests)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Item 1: Helper to read env vars — treat empty/whitespace-only as unset.
+# ---------------------------------------------------------------------------
+
+def _env_str(name: str, default: str) -> str:
+    """Return env var value, falling back to default if absent or blank."""
+    val = os.environ.get(name, "")
+    return val.strip() if val.strip() else default
+
+
+def _env_int(name: str, default: int) -> int:
+    """Return env var as int, falling back to default if absent, blank, or non-integer."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+# ---------------------------------------------------------------------------
+# Item 3: Shared urgency helper for model-added proposed_needs.
+# Derives urgency from story/quote signals; never hardcodes "high".
+# ---------------------------------------------------------------------------
+
+_IMMEDIATE_SIGNAL_RE = re.compile(
+    r"\b(lock(?:ed)?\s+(?:us|me)\s+out|change\s+the\s+locks|actual\s+lockout|"
+    r"eviction\s+notice|3[-\s]day\s+notice|sleeping\s+in\s+(?:my|our|the)\s+car|"
+    r"homeless|no\s+shelter|disconnection\s+notice|shut\s*off\s+notice|"
+    r"past\s+due|overdue|behind\s+on\s+rent|was\s+due)\b",
+    re.IGNORECASE,
+)
+
+
+def _wx_urgency(category: str, story: str, original_quote: str) -> Tuple[str, str]:
+    """
+    Return (urgency, urgency_reason) for a model-identified proposed_need.
+    Checks story and quote for urgent signals; defaults to 'medium'.
+    """
+    combined = (story + " " + original_quote).lower()
+    if _IMMEDIATE_SIGNAL_RE.search(combined):
+        return "immediate", "Urgent signal detected in story or quote"
+    # High-urgency patterns: eviction threats, food shortage, job loss
+    if re.search(
+        r"\b(evict|threaten|lock\s+out|hungry|running\s+low\s+on\s+food|"
+        r"laid\s+off|fired|lost\s+(?:my|our)\s+job|no\s+food|not\s+enough\s+food)\b",
+        combined,
+    ):
+        return "high", "High-urgency signal detected in story or quote"
+    return "medium", "AI-identified need; no urgent signals detected"
+
+
 def _get_iam_token(
     apikey: str,
     http_post_fn: Optional[Callable] = None,
+    deadline: Optional[float] = None,
 ) -> str:
-    """Return a cached IAM bearer token, refreshing when < 60s from expiry."""
+    """Return a cached IAM bearer token, refreshing when < 60s from expiry.
+
+    Checks both in-process cache and cross-process persisted cache.
+    deadline: monotonic deadline; if remaining budget is too small, raises TimeoutError.
+    """
     global _iam_token_cache
+
+    # 1. In-process cache check
     token, expires_at = _iam_token_cache
     now = time.monotonic()
     if token and now < expires_at - 60:
         return token
+
+    # 2. Cross-process persistent cache check
+    p_token, p_expires_at = _get_persisted_iam_token()
+    if p_token and time.monotonic() < p_expires_at - 60:
+        _iam_token_cache = (p_token, p_expires_at)
+        return p_token
+
+    # Need to fetch a new token — compute remaining budget
+    # Item 5: use remaining deadline budget for IAM call, not a full separate timeout
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("No time budget remaining for IAM token fetch")
+        iam_timeout = max(1, int(remaining))
+    else:
+        iam_timeout = _env_int("WATSONX_TIMEOUT", DEFAULT_WATSONX_TIMEOUT)
 
     iam_url = "https://iam.cloud.ibm.com/identity/token"
     body = urllib.parse.urlencode({
@@ -636,19 +789,20 @@ def _get_iam_token(
         "apikey": apikey,
     }).encode()
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    timeout = int(os.environ.get("WATSONX_TIMEOUT", DEFAULT_WATSONX_TIMEOUT))
 
     if http_post_fn is not None:
         resp_bytes = http_post_fn(iam_url, body, headers)
     else:
         req = urllib.request.Request(iam_url, data=body, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=iam_timeout) as resp:
             resp_bytes = resp.read()
 
     data = json.loads(resp_bytes)
     new_token = data["access_token"]
     expires_in = int(data.get("expires_in", 3600))
-    _iam_token_cache = (new_token, time.monotonic() + expires_in)
+    mono_expires = time.monotonic() + expires_in
+    _iam_token_cache = (new_token, mono_expires)
+    _persist_iam_token(new_token, expires_in)
     return new_token
 
 
@@ -661,34 +815,47 @@ def _call_watsonx_chat(
     or None on any error (timeout, HTTP error, invalid JSON, call cap reached).
     Privacy: never logs story_text, prompts, API keys, or model output text.
     Returns (result_dict_or_None, latency_ms, used_call).
+
+    Item 5: Uses a single shared deadline budget (<=18 s) across IAM + chat.
+    Item 4: Counts ALL attempted calls (including failed/timed-out) in persisted state.
+    Item 1: Empty/whitespace env vars fall back to defaults.
     """
     global _watsonx_call_count
 
-    apikey = os.environ.get("WATSONX_APIKEY", "")
+    # Item 1: treat empty WATSONX_APIKEY as unset
+    apikey = os.environ.get("WATSONX_APIKEY", "").strip()
     if not apikey:
         return None, 0, False
 
-    max_calls = int(os.environ.get("WATSONX_MAX_CALLS", DEFAULT_WATSONX_MAX_CALLS))
-    if _watsonx_call_count >= max_calls:
+    # Item 1: safe int parse for MAX_CALLS
+    max_calls = _env_int("WATSONX_MAX_CALLS", DEFAULT_WATSONX_MAX_CALLS)
+
+    # Item 4: check persisted cross-process call count (use whichever is larger)
+    persisted_count = _get_call_count()
+    effective_count = max(_watsonx_call_count, persisted_count)
+    if effective_count >= max_calls:
         return None, 0, False  # call cap reached
 
-    model_id = os.environ.get("WATSONX_MODEL_ID", DEFAULT_WATSONX_MODEL_ID)
-    wx_url = os.environ.get("WATSONX_URL", DEFAULT_WATSONX_URL).rstrip("/")
-    project_id = os.environ.get("WATSONX_PROJECT_ID", DEFAULT_WATSONX_PROJECT_ID)
-    timeout = int(os.environ.get("WATSONX_TIMEOUT", DEFAULT_WATSONX_TIMEOUT))
+    # Item 1: safe reads for other string env vars
+    model_id = _env_str("WATSONX_MODEL_ID", DEFAULT_WATSONX_MODEL_ID)
+    wx_url = _env_str("WATSONX_URL", DEFAULT_WATSONX_URL).rstrip("/")
+    project_id = _env_str("WATSONX_PROJECT_ID", DEFAULT_WATSONX_PROJECT_ID)
 
-    endpoint = (
-        f"{wx_url}/ml/v1/text/chat?version=2024-05-31"
-    )
+    # Item 5: single shared timeout budget, capped at 18 s (< Supervisor's 30 s limit)
+    raw_timeout = _env_int("WATSONX_TIMEOUT", DEFAULT_WATSONX_TIMEOUT)
+    budget = min(raw_timeout, 18)
+    deadline = time.monotonic() + budget
+
+    endpoint = f"{wx_url}/ml/v1/text/chat?version=2024-05-31"
 
     system_prompt = (
         "You are an intake assistant for a community aid navigator. "
         "Extract structured crisis information from the applicant story. "
-        "Return ONLY a JSON object with two optional keys: "
-        "\"proposed_needs\" (array) and \"factual_claims\" (array). "
+        "Return ONLY a JSON object with one optional key: "
+        "\"proposed_needs\" (array). "
         "Each proposed_need: {category, description, original_quote}. "
-        "Each factual_claim: {field, value}. "
         "Do NOT include urgency — it is determined by rules. "
+        "Do NOT return factual_claims — facts are extracted by deterministic rules. "
         "Do NOT invent information not stated in the story."
     )
 
@@ -706,15 +873,24 @@ def _call_watsonx_chat(
     }
     body = json.dumps(payload).encode()
 
+    # Item 4: increment persisted call count before the attempt (counts failures too)
+    new_count = _increment_call_count()
+    _watsonx_call_count = new_count
+
     try:
-        bearer = _get_iam_token(apikey, http_post_fn=http_post_fn)
+        # Item 5: pass remaining deadline budget to IAM fetch
+        bearer = _get_iam_token(apikey, http_post_fn=http_post_fn, deadline=deadline)
     except Exception:
-        return None, 0, False
+        return None, 0, True  # used_call=True: call was attempted and counted
 
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {bearer}",
     }
+
+    # Item 5: remaining budget for the actual chat call
+    remaining = deadline - time.monotonic()
+    chat_timeout = max(1, int(remaining))
 
     t0 = time.monotonic()
     try:
@@ -722,11 +898,10 @@ def _call_watsonx_chat(
             resp_bytes = http_post_fn(endpoint, body, headers)
         else:
             req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=chat_timeout) as resp:
                 resp_bytes = resp.read()
-        _watsonx_call_count += 1
     except Exception:
-        return None, 0, False
+        return None, 0, True  # counted but failed
 
     latency_ms = int((time.monotonic() - t0) * 1000)
 
@@ -756,14 +931,15 @@ def _merge_watsonx_into_result(
     urgency_fn: Callable,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, int]:
     """
-    Merge strictly validated additions from watsonx into rule-derived facts/needs.
+    Merge strictly validated proposed_needs additions from watsonx into rule-derived needs.
     Never modifies safety_or_official_deadline_flags.
-    Never trusts model urgency — always derives from rules.
+    Never trusts model urgency — always derives from rules via urgency_fn.
+    Item 2: factual_claims from the model are ignored (100% rule-based).
+    Item 2: original_quote must be substantive (>=8 chars, >=2 words).
     """
-    existing_fact_fields = {f["field"] for f in facts}
     existing_need_cats = {n["category"] for n in proposed_needs}
 
-    # Merge proposed_needs
+    # Merge proposed_needs only (Item 2: factual_claims section removed)
     wx_needs = wx_result.get("proposed_needs", [])
     if isinstance(wx_needs, list):
         for item in wx_needs:
@@ -775,57 +951,33 @@ def _merge_watsonx_into_result(
             if cat in existing_need_cats:
                 continue
             original_quote = item.get("original_quote", "")
-            # Grounding check: quote must appear verbatim in story (case-insensitive)
-            if not original_quote or original_quote.strip().lower() not in story.lower():
+            q_stripped = original_quote.strip()
+            # Item 2: Substantive grounding check:
+            #   - quote must be at least 8 characters
+            #   - quote must contain at least 2 words
+            #   - quote must appear verbatim in story (case-insensitive)
+            if (
+                len(q_stripped) < 8
+                or len(q_stripped.split()) < 2
+                or q_stripped.lower() not in story.lower()
+            ):
                 continue
             desc = item.get("description", cat.replace("_", " ").title())
-            urgency = urgency_fn(cat)
+            # Item 3: derive urgency from shared rule helper, not hardcoded
+            urgency, urgency_reason = urgency_fn(cat, story, q_stripped)
             proposed_needs.append(_make_need(
                 cat,
                 need_idx,
                 description=str(desc)[:200],
                 original_quote=original_quote,
                 urgency=urgency,
-                urgency_reason=f"Identified by AI enhancement (urgency from rules)",
+                urgency_reason=urgency_reason,
             ))
             existing_need_cats.add(cat)
             need_idx += 1
 
-    # Merge factual_claims
-    wx_facts = wx_result.get("factual_claims", [])
-    if isinstance(wx_facts, list):
-        for item in wx_facts:
-            if not isinstance(item, dict):
-                continue
-            field = item.get("field", "")
-            if field not in _ALLOWED_FACTUAL_FIELDS:
-                continue
-            if field in existing_fact_fields:
-                continue
-            value = item.get("value")
-            # Type/enum validation per field
-            if field == "employment_status":
-                if value not in _ALLOWED_EMPLOYMENT_STATUS:
-                    continue
-            elif field == "eviction_notice_type":
-                if value not in _ALLOWED_EVICTION_NOTICE_TYPE:
-                    continue
-            elif field == "has_written_eviction_notice":
-                if not isinstance(value, bool):
-                    continue
-            elif field == "household_size":
-                if not isinstance(value, int) or value < 1:
-                    continue
-            elif field == "children_ages":
-                if not isinstance(value, list) or not all(isinstance(a, int) for a in value):
-                    continue
-            elif field in ("rent_amount_monthly", "cash_on_hand_approx",
-                           "household_gross_monthly_income", "rent_arrears_amount"):
-                if not isinstance(value, (int, float)):
-                    continue
-            facts.append(_make_fact(field, value, fact_idx))
-            existing_fact_fields.add(field)
-            fact_idx += 1
+    # Item 2: factual_claims from the model are intentionally ignored.
+    # All factual_claims are 100% rule-derived.
 
     return facts, proposed_needs, need_idx, fact_idx
 
@@ -1480,9 +1632,7 @@ def _understand_story(
                 "message": "watsonx.ai call failed or capped; deterministic result used.",
             })
         else:
-            def _default_urgency(category: str) -> str:
-                return "high"
-
+            # Item 3: use shared _wx_urgency helper (not hardcoded "high")
             facts, proposed_needs, need_idx, fact_idx = _merge_watsonx_into_result(
                 wx_result=wx_result,
                 story=story,
@@ -1490,13 +1640,13 @@ def _understand_story(
                 proposed_needs=proposed_needs,
                 need_idx=need_idx,
                 fact_idx=fact_idx,
-                urgency_fn=_default_urgency,
+                urgency_fn=_wx_urgency,
             )
             env["is_mock"] = False
             env["issues"].append({
                 "code": "WATSONX_USED",
                 "severity": "info",
-                "message": f"watsonx.ai call succeeded.",
+                "message": "watsonx.ai call succeeded.",
                 "call_count": _watsonx_call_count,
                 "latency_ms": latency_ms,
             })

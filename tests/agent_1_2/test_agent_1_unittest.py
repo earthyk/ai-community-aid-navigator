@@ -835,12 +835,38 @@ class TestAgent1(unittest.TestCase):
         self.assertGreaterEqual(len(safety), 1)
 
 
+# ---------------------------------------------------------------------------
+# Item 6: Module-level WATSONX_* env isolation
+# ---------------------------------------------------------------------------
+_WATSONX_ENV_KEYS = [k for k in os.environ if k.startswith("WATSONX_")]
+_SAVED_WATSONX_ENV: dict = {}
+
+
+def setUpModule():
+    """Remove all WATSONX_* env vars before any test in this module runs."""
+    global _SAVED_WATSONX_ENV
+    _SAVED_WATSONX_ENV = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_")}
+
+
+def tearDownModule():
+    """Restore WATSONX_* env vars after all tests in this module complete."""
+    os.environ.update(_SAVED_WATSONX_ENV)
+
+
 class TestWatsonxIntegration(unittest.TestCase):
     """
     Offline mocked tests for watsonx.ai integration in _understand_story.
     All network calls are intercepted via the _http_post_fn hook; WATSONX_APIKEY
     is controlled via os.environ patching.  Zero external dependencies.
     """
+
+    def setUp(self):
+        """Ensure no WATSONX_* env vars leak in from parent environment."""
+        self._stashed = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_")}
+
+    def tearDown(self):
+        """Restore any WATSONX_* vars stashed during setUp."""
+        os.environ.update(self._stashed)
 
     # ------------------------------------------------------------------
     # helpers
@@ -853,10 +879,12 @@ class TestWatsonxIntegration(unittest.TestCase):
 
     @staticmethod
     def _reset_module():
-        """Reset module-level watsonx state before a test."""
+        """Reset module-level watsonx state before a test (in-process + persisted)."""
         import navigator.agents.agent_1_2.agent_1 as a1_mod
         a1_mod._watsonx_call_count = 0
         a1_mod._iam_token_cache = ("", 0.0)
+        # Also clear the cross-process persistent state file
+        a1_mod._write_state({})
 
     def _make_req(self, story=None, http_post_fn=None):
         payload = {
