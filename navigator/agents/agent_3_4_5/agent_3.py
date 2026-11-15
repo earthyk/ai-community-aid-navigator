@@ -4,8 +4,11 @@ no eligibility conclusions, no urgency ranking, no KB edits. Verified KB only (e
 Ordering policy (deterministic, documented for Julia's review 3.1): needs in request order; within a need,
 programs whose subcategory matches first, then by program_id. When more candidates are found than
 max_candidates, the result is truncated and says so (CANDIDATES_TRUNCATED) - it never looks exhaustive.
-Unknown geography is reported as GEOGRAPHY_UNRESOLVED, never as a coverage gap (Julia's review 3.2)."""
-from .common import load_kb, to_counties, area_covers, envelope, bad_request, check_task, issue, CLAIM_FIELDS, CATEGORIES
+Unknown geography is reported as GEOGRAPHY_UNRESOLVED, never as a coverage gap (Julia's review 3.2).
+No-ZIP rule: when geography is exactly [] (empty list), statewide programs are searched; county-only
+programs are skipped; no COVERAGE_GAP is emitted (unknown location, not a lack of programs). Any
+non-empty geography that does not resolve is unchanged (nothing returned, no COVERAGE_GAP)."""
+from .common import load_kb, to_counties, area_covers, envelope, bad_request, check_task, issue, CLAIM_FIELDS, CATEGORIES, STATEWIDE
 
 DEFAULT_MAX = 50
 
@@ -43,13 +46,19 @@ def handle(request, kb_path=None):
     if errs:
         return envelope(request, "agent_3", "failed", {}, [issue("INPUT_INVALID", "critical", "; ".join(errs))])
     programs, _ = load_kb(kb_path)
-    counties, issues = to_counties(p["geography"])
+    raw_geo = p["geography"]
+    counties, issues = to_counties(raw_geo)
     max_n = p.get("max_candidates") or DEFAULT_MAX
     geography_known = bool(counties)
+    # statewide_only: geography list was exactly empty ([]). Any non-empty list that doesn't
+    # resolve (unknown ZIP, unrecognised county name) is a different case and returns nothing.
+    statewide_only = not geography_known and raw_geo == []
     if not geography_known:
-        issues.append(issue("GEOGRAPHY_UNRESOLVED", "warning",
-                            "No county could be resolved from the request; programs could not be compared by area. "
-                            "This is unknown location, not a lack of programs.", None))
+        note = ("No ZIP code given: only statewide programs were searched; local programs need a ZIP code."
+                if statewide_only else
+                "No county could be resolved from the request; programs could not be compared by area. "
+                "This is unknown location, not a lack of programs.")
+        issues.append(issue("GEOGRAPHY_UNRESOLVED", "warning", note, None))
     found, rejected = {}, 0
     for need in p["needs"]:
         if need["category"] not in CATEGORIES:  # input error, not a coverage gap (taxonomy: unknown values rejected)
@@ -60,13 +69,16 @@ def handle(request, kb_path=None):
         if need["category"] == "other_unlisted":
             issues.append(issue("COVERAGE_GAP", "info", "Need is outside the category list (other_unlisted); no KB category to search.", need["need_id"]))
             continue
-        if not geography_known:
-            continue  # cannot compare areas; reported once above, never as a coverage gap
+        if not geography_known and not statewide_only:
+            continue  # ZIP given but unmapped: cannot compare areas; reported once above, never as a coverage gap
         sub = need.get("subcategory")
-        hits = [pr for pr in programs if pr["category"] == need["category"] and area_covers(pr["geography"], counties)]
+        if statewide_only:
+            hits = [pr for pr in programs if pr["category"] == need["category"] and STATEWIDE in pr["geography"]]
+        else:
+            hits = [pr for pr in programs if pr["category"] == need["category"] and area_covers(pr["geography"], counties)]
         # Subcategory is a preference, not a filter: exact subcategory first, then the rest of the category.
         hits.sort(key=lambda pr: (0 if sub and pr.get("subcategory") == sub else 1, pr["program_id"]))
-        if not hits:
+        if not hits and not statewide_only:
             issues.append(issue("COVERAGE_GAP", "info",
                                 f"No verified KB program for {need['category']} in {sorted(counties)}.", need["need_id"]))
         for pr in hits:
