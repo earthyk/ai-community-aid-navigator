@@ -122,6 +122,7 @@ ai-community-aid-navigator/
 
 ```
 
+
 ---
 
 ## Quick Start & Verification
@@ -129,18 +130,23 @@ ai-community-aid-navigator/
 ### 1. Clone the Repository
 
 ```bash
-git clone [https://github.com/polyulia85/ai-community-aid-navigator.git](https://github.com/polyulia85/ai-community-aid-navigator.git)
+git clone https://github.com/polyulia85/ai-community-aid-navigator.git
 cd ai-community-aid-navigator
-
 ```
 
-### 2.  Run the Test Suite
+### 2. Run the Knowledge Base Builder
+
+```bash
+python3 navigator/kb/tools/build_kb.py
+python3 navigator/kb/tools/validate_kb.py
+```
+
+### 3. Run the Test Suite
 
 Execute the master test suite using Python's standard `unittest` framework:
 
 ```bash
 python -m unittest discover -s tests -t .
-
 ```
 
 ---
@@ -165,6 +171,29 @@ For component ownership areas and session export rules for each member, refer to
 * **M. Hisham Abbasi** — Prioritization, Action Planning & Quality Validation 
 ---
 
+## Knowledge base
+
+`navigator/kb/kb_sacramento.json` is the local knowledge base for Sacramento County. As of Nov 12, 2026 it covers **11 programs** and **200 evidence records** across food assistance, housing assistance, and income assistance:
+
+| Program | Category | Availability |
+|---|---|---|
+| CalFresh | food_assistance / calfresh_benefits | confirmed_open |
+| Unemployment Insurance (EDD) | income_assistance / unemployment_insurance | confirmed_open |
+| Saint John's Housing Assistance Program | housing_assistance / rental_assistance | confirmed_open |
+| Sacramento Coordinated Access System (2-1-1, press 8) | housing_assistance / eviction_prevention | confirmed_open |
+| Emergency Food Distribution — Midtown (River City Food Bank) | food_assistance / food_pantry | confirmed_open |
+| Emergency Food Distribution — Arden-Arcade (River City Food Bank) | food_assistance / food_pantry | confirmed_open |
+| Client Choice Food Pantry (Salvation Army Sacramento Metro) | food_assistance / food_pantry | confirmed_open |
+| Rent & Utility Assistance — rental assistance (Salvation Army Sacramento Metro) | housing_assistance / rental_assistance | unknown (funding depends on availability) |
+| Food Finder — partner food distribution sites (Sacramento Food Bank & Family Services) | food_assistance / food_pantry | confirmed_open |
+| Elk Grove Food Bank Services (food distribution) | food_assistance / food_pantry | confirmed_open |
+| Free legal help for tenants (Legal Services of Northern California, Sacramento office) | housing_assistance / housing_legal_aid | confirmed_open |
+
+Sources and terms of use: `navigator/kb/SOURCES.md` (32 source links, 15 sites, 13 owners as of Nov 12, 2026).
+
+KB is rebuilt by running `python3 navigator/kb/tools/build_kb.py` from the repo root. Validation: `python3 navigator/kb/tools/validate_kb.py`.
+
+- M. Hisham Abbasi — Prioritization, Action Planning & Quality Validation
 
 ## Demo and documentation
 

@@ -1,4 +1,4 @@
-"""Supervisor checks S0–S9 (Shared JSON Contracts v1.0, section 5.2).
+"""Supervisor checks S0–S9 (Shared JSON Contracts v1.1, section 5.2).
 
 Each check returns a list of Issue dicts: {code, severity, message, related_ref}.
 Empty list = the check passed. The Supervisor accepts a result only when no
@@ -9,6 +9,9 @@ import re
 from navigator.supervisor import contract as C
 
 # ---------------------------------------------------------------- patterns
+# proposed_needs[i].need_id is a new Need defined by Agent 1 (CR-014, PROPOSED v1.2), not a reference.
+_NEW_NEED_DEF = re.compile(r"proposed_needs\[\d+\]\.need_id")
+
 SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b|\b\d{3} \d{2} \d{4}\b")
 CARD_RE = re.compile(r"\b(?:\d[ -]?){13,19}\b")
 ROUTING_RE = re.compile(r"(?<![\d-])\d{9}(?![\d-])")  # 9 digits alone; ZIP+4 has a dash
@@ -61,7 +64,7 @@ def mask_user_text(text):
 
 # ---------------------------------------------------------------- helpers
 def _walk(obj, path=""):
-    """Yield (path, key, value, parent_key) for every key in nested dicts/lists."""
+    """Yield (path, key, value) for every key in nested dicts and lists; list items add [i] to the path."""
     if isinstance(obj, dict):
         for k, v in obj.items():
             p = f"{path}.{k}" if path else k
@@ -99,6 +102,59 @@ def s1_schema(result):
         out.append(issue("SCHEMA_VERSION", "warning",
                          f"schema_version is {result.get('schema_version')!r}, expected {C.SCHEMA_VERSION!r}",
                          "schema_version"))
+    return out
+
+
+# ---------------------------------------------------------------- S1 (per-role result fields)
+def s1_result_fields(request, result):
+    """S1 extension: per-role, per-task_type result field checks.
+
+    Reads role_id and task_type from the REQUEST (not the result — agent_id
+    is not trusted until S2).  Only called when s1_schema found no critical
+    issue and status is not 'failed'.
+    Fails closed: if there is no entry for this (role_id, task_type) pair,
+    returns one critical SCHEMA_INVALID so the result is rejected.
+    Never raises.
+    """
+    role = request.get("role_id")
+    task = request.get("task_type")
+    entry = C.RESULT_REQUIRED.get(role, {}).get(task)
+    if entry is None:
+        return [issue("SCHEMA_INVALID", "critical",
+                      f"no result rules for {role}/{task}", None)]
+    res = result.get("result", {})
+    out = []
+    # 1. Required top-level result keys (and list-type check in the same pass)
+    for key in entry.get("result", []):
+        if key not in res:
+            out.append(issue("SCHEMA_INVALID", "critical",
+                             f"result.{key} is missing", key))
+        elif key in entry.get("lists", []) and not isinstance(res[key], list):
+            out.append(issue("SCHEMA_INVALID", "critical",
+                             f"result.{key} must be a list", key))
+    # 1b. Optional lists: when present must be a list; absent is fine.
+    for key in entry.get("optional_lists", []):
+        if key in res and not isinstance(res[key], list):
+            out.append(issue("SCHEMA_INVALID", "critical",
+                             f"result.{key} must be a list", key))
+    # 2. Required item keys within each required or optional list
+    for list_key, item_keys in entry.items():
+        if list_key in ("result", "lists", "optional_lists"):
+            continue
+        items = res.get(list_key)
+        if not isinstance(items, list):
+            continue   # absent (optional) or wrong type already reported; skip items
+        for i, item in enumerate(items):
+            ref_prefix = f"{list_key}[{i}]"
+            if not isinstance(item, dict):
+                out.append(issue("SCHEMA_INVALID", "critical",
+                                 f"{ref_prefix} must be an object", ref_prefix))
+                continue
+            for k in item_keys:
+                if k not in item:
+                    out.append(issue("SCHEMA_INVALID", "critical",
+                                     f"{ref_prefix}.{k} is missing",
+                                     f"{ref_prefix}.{k}"))
     return out
 
 
@@ -143,6 +199,8 @@ def s5_references(result, known):
     """known = {"need_id": set(), "program_id": set(), "evidence_id": set()}.
 
     Only the kinds supplied are checked. program_id may be null (contract 4.6, 4.8).
+    proposed_needs[*].need_id are new definitions made by Agent 1 (not references),
+    so they are not checked against the known set.
     """
     out = []
     ref_keys = {
@@ -155,6 +213,8 @@ def s5_references(result, known):
         kind = ref_keys.get(key)
         if kind is None or kind not in known:
             continue
+        if key == "need_id" and _NEW_NEED_DEF.fullmatch(path):
+            continue   # a new need defined by Agent 1 (CR-014, PROPOSED v1.2), not a reference
         values = value if isinstance(value, list) else [value]
         for v in values:
             if v is None:
@@ -208,6 +268,11 @@ def check_result(request, result, current_case_version, known=None, seconds_take
     issues = s1_schema(result)
     if any(i["severity"] == "critical" for i in issues):
         return False, issues            # can't trust the rest of the envelope
+    # S1 extension: per-role result fields (FIX 5); a failed result carries result {}
+    if result.get("status") != "failed":
+        issues += s1_result_fields(request, result)
+    if any(i["severity"] == "critical" for i in issues):
+        return False, issues
     issues += s2_identity(request, result)
     issues += s3_stale(result, current_case_version)
     issues += s4_enums(result)

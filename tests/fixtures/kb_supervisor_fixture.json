@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "note": "DRAFT Nov 2 update (Saint John's reopening + ev_calfresh_020 recheck). NOT PUBLISHED. Contracts v1.0 (frozen Oct 23). Built by kb/tools/build_kb.py.",
+  "note": "Frozen test copy for Supervisor tests (Nov 6, 2026). Not live data. Do not update when the KB changes.",
   "program_records": [
     {
       "program_id": "prog_food_calfresh_sac_001",
@@ -137,8 +137,8 @@
           "evidence_refs": [
             "ev_calfresh_020"
           ],
-          "verification_status": "needs_review",
-          "checked_at": "2026-11-02T00:00:00-08:00"
+          "verification_status": "verified",
+          "checked_at": "2026-11-02T15:30:00-08:00"
         },
         {
           "value": "Starting June 1, 2026, college students are eligible for CalFresh through Local Programs that Increase Employability (LPIE).",
@@ -478,7 +478,7 @@
         "ev_calfresh_054",
         "ev_calfresh_055"
       ],
-      "last_verified_at": "2026-11-02T00:00:00-08:00",
+      "last_verified_at": "2026-11-02T15:30:00-08:00",
       "verification_status": "verified"
     },
     {
@@ -833,8 +833,8 @@
           "evidence_refs": [
             "ev_sjhap_020"
           ],
-          "verification_status": "needs_review",
-          "checked_at": "2026-11-02T00:00:00-08:00"
+          "verification_status": "verified",
+          "checked_at": "2026-11-02T15:30:00-08:00"
         }
       ],
       "contact": [
@@ -877,7 +877,7 @@
         "ev_sjhap_020",
         "ev_sjhap_021"
       ],
-      "last_verified_at": "2026-11-02T00:00:00-08:00",
+      "last_verified_at": "2026-11-02T15:30:00-08:00",
       "verification_status": "verified"
     },
     {
@@ -1236,12 +1236,12 @@
       "field_path": "eligibility_criteria[15]",
       "claim_value": "Sacramento County is not listed among the counties where the ABAWD work requirement is waived (Nov 1, 2025 to Oct 31, 2026: Alpine, Colusa, Imperial, Merced, Monterey, Plumas, Tulare; Nov 1, 2026 to Oct 31, 2027: Colusa, Imperial, Kings, Merced, Monterey, Plumas, Tulare).",
       "source_url": "https://cdss.ca.gov/inforesources/CalFresh/ABAWD",
-      "checked_at": "2026-11-02T00:00:00-08:00",
-      "verification_status": "needs_review",
+      "checked_at": "2026-11-02T15:30:00-08:00",
+      "verification_status": "verified",
       "source_title": "CalFresh Work and Community Engagement Requirements (Able-Bodied Adults Without Dependents) | CDSS",
       "source_authority_scope": "state_governing_agency",
       "effective_date": null,
-      "notes": "DRAFT for the Nov 2 recheck, not yet checked: the Nov 1, 2026 - Oct 31, 2027 waiver list on the CDSS page does not include Sacramento County. Next recheck: 2027-11-01."
+      "notes": "Rechecked 2026-11-02: the Nov 1, 2026 - Oct 31, 2027 waiver list on the CDSS page does not include Sacramento County. Next recheck: 2027-11-01."
     },
     {
       "evidence_id": "ev_calfresh_021",
@@ -2276,12 +2276,12 @@
       "field_path": "application_method[0]",
       "claim_value": "Apply online through the 'APPLY HERE' link on the program page: https://wkf.ms/4tjLVzi",
       "source_url": "https://saintjohnsprogram.org/get-help/housing-assistance-program/",
-      "checked_at": "2026-11-02T00:00:00-08:00",
-      "verification_status": "needs_review",
+      "checked_at": "2026-11-02T15:30:00-08:00",
+      "verification_status": "verified",
       "source_title": "Housing Assistance Program | Saint John's Program for Real Change (page text as published, checked Nov 2, 2026)",
       "source_authority_scope": "local_provider_operating_intake",
       "effective_date": "2026-11-02",
-      "notes": "DRAFT, not yet checked against the official page. Replaces ev_sjhap_014 ('return back to this page on Monday, November 2nd'). The online form link appeared on the page on Nov 2. Rent in the Nov 1 test case was due before this date."
+      "notes": "Replaces ev_sjhap_014 ('return back to this page on Monday, November 2nd'). The online form link appeared on the page on Nov 2. Rent in the Nov 1 test case was due before this date."
     },
     {
       "evidence_id": "ev_sjhap_021",
@@ -2289,12 +2289,12 @@
       "field_path": "availability",
       "claim_value": "The page no longer states that funds are exhausted and shows an 'APPLY HERE' link to the online application form.",
       "source_url": "https://saintjohnsprogram.org/get-help/housing-assistance-program/",
-      "checked_at": "2026-11-02T00:00:00-08:00",
-      "verification_status": "needs_review",
+      "checked_at": "2026-11-02T15:30:00-08:00",
+      "verification_status": "verified",
       "source_title": "Housing Assistance Program | Saint John's Program for Real Change (page text as published, checked Nov 2, 2026)",
       "source_authority_scope": "local_provider_operating_intake",
       "effective_date": "2026-11-02",
-      "notes": "DRAFT, not yet checked against the official page. Replaces ev_sjhap_019 ('all of the funds for October 2026 have been exhausted') and ev_sjhap_022 ('return back to this page on Monday, November 2nd'). Basis for availability = confirmed_open (published status only, not a funding guarantee)."
+      "notes": "Replaces ev_sjhap_019 ('all of the funds for October 2026 have been exhausted') and ev_sjhap_022 ('return back to this page on Monday, November 2nd'). Basis for availability = confirmed_open (published status only, not a funding guarantee)."
     },
     {
       "evidence_id": "ev_cas_001",

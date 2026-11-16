@@ -44,7 +44,10 @@ class T1_ClearMatch(unittest.TestCase):
         r3 = req("agent_3", "retrieve_candidates", {"needs": NEEDS, "geography": GEO, "retrieval_constraints": []})
         out3 = agent_3.handle(r3); check_envelope(self, r3, out3, "agent_3")
         by = {c["program_id"]: c["matched_need_ids"] for c in out3["result"]["candidate_programs"]}
-        self.assertEqual(by, {UI: ["need_001"], SJ: ["need_002"], CAS: ["need_002"], CALFRESH: ["need_003"]})
+        # These four original programs must always be present; Nov 12 adds more.
+        for pid, need in ((UI, "need_001"), (SJ, "need_002"), (CAS, "need_002"), (CALFRESH, "need_003")):
+            self.assertIn(pid, by, f"{pid} must be in the candidates")
+            self.assertEqual(by[pid], [need], f"{pid} matched needs wrong")
         self.assertFalse([i for i in out3["issues"] if i["code"] == "COVERAGE_GAP"])
         r4cands = out3["result"]["candidate_programs"]
         out4 = match(r4cands, FACTS)
@@ -57,7 +60,8 @@ class T1_ClearMatch(unittest.TestCase):
         confirmed = [dict(f, confirmation_status="confirmed") for f in FACTS]
         self.assertEqual(match(cand, confirmed)["result"]["matches"][0]["match_status"], "potential_match")  # income unknown
         with_income = confirmed + [{"fact_id": "fact_009", "field": "household_gross_monthly_income", "value": 0, "confirmation_status": "confirmed"}]
-        self.assertEqual(match(cand, with_income)["result"]["matches"][0]["match_status"], "supported_match")
+        # v1.6 (Julia 4.2): CalFresh has eligibility criteria that are not evaluated yet, so it stays potential_match
+        self.assertEqual(match(cand, with_income)["result"]["matches"][0]["match_status"], "potential_match")
 
 
 class T2_UnknownInfo(unittest.TestCase):
@@ -157,11 +161,17 @@ class T6_GeographyAndCategories(unittest.TestCase):
         self.assertEqual(retrieve(income, ["Washoe County"])["result"]["candidate_programs"], [])  # Nevada
 
     def test_zip_only_still_works_locally(self):
-        self.assertEqual(len(retrieve(geography=["95823"])["result"]["candidate_programs"]), 4)
+        # 11 programs in KB as of Nov 12, 2026 (4 original + 7 new food/housing records)
+        self.assertEqual(len(retrieve(geography=["95823"])["result"]["candidate_programs"]), 11)
 
     def test_subcategory_orders_but_does_not_filter(self):
         ids = [c["program_id"] for c in retrieve([NEEDS[1]])["result"]["candidate_programs"]]
-        self.assertEqual(ids, [SJ, CAS])  # rental_assistance first, eviction_prevention route still shown
+        # rental_assistance subcategory programs come before eviction_prevention; CAS is still shown.
+        # Nov 12 adds prog_housing_salvationarmy_rent_sac_001 and prog_housing_lsnc_sac_001.
+        self.assertIn(SJ, ids, "Saint John's (rental_assistance) must be in results")
+        self.assertIn(CAS, ids, "Coordinated Access (eviction_prevention) must be in results")
+        # SJ must appear before CAS (subcategory rental_assistance sorts first)
+        self.assertLess(ids.index(SJ), ids.index(CAS), "rental_assistance programs must come before CAS")
 
     def test_other_unlisted_is_coverage_gap(self):
         out = retrieve([{"need_id": "need_009", "category": "other_unlisted", "subcategory": None, "description": "x", "urgency": "unknown"}])
@@ -178,7 +188,12 @@ class T7_InputErrors(unittest.TestCase):
         self.assertEqual(out["status"], "failed")  # the only need was invalid
         mixed = retrieve([NEEDS[2], {"need_id": "need_009", "category": "housing", "subcategory": None, "description": "Rent", "urgency": "high"}])
         self.assertEqual(mixed["status"], "partial")  # valid need still processed
-        self.assertEqual([c["program_id"] for c in mixed["result"]["candidate_programs"]], [CALFRESH])
+        # All food programs for Sacramento County must be returned; invalid housing need is skipped.
+        pids = {c["program_id"] for c in mixed["result"]["candidate_programs"]}
+        self.assertIn(CALFRESH, pids, "CalFresh must be in food results")
+        # Every returned program must have matched only food_assistance (the valid need_003)
+        for c in mixed["result"]["candidate_programs"]:
+            self.assertEqual(c["matched_need_ids"], ["need_003"], f"{c['program_id']} must match only need_003")
 
     def test_2_wrong_task_type_fails(self):
         for mod, aid, wrong in ((agent_3, "agent_3", "verify_resources"), (agent_4, "agent_4", "retrieve_candidates"), (agent_5, "agent_5", "match_resources")):
@@ -209,7 +224,7 @@ class T8_SamePageRule(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             json.dump(kb, f)
         try:
-            return agent_5.handle(req("agent_5", "verify_resources", {"programs_to_check": [{"program_id": "prog_test_fixture_002", "field_paths": ["availability"]}]}), kb_path=f.name)["result"]["checked_claims"][0]
+            return agent_5.handle(req("agent_5", "verify_resources", {"programs_to_check": [{"program_id": "prog_test_fixture_002", "field_paths": ["availability"]}]}), kb_path=f.name)["result"]["checked_claims"]
         finally:
             os.unlink(f.name)
 
@@ -218,14 +233,209 @@ class T8_SamePageRule(unittest.TestCase):
                 "source_url": "https://example.org/one-page", "checked_at": "2026-11-02T09:00:00-08:00", "verification_status": "verified", "effective_date": eff}
 
     def test_closed_now_reopens_later_is_complementary(self):
-        c = self.run5([self.row("ev_a", "Funds for October are exhausted.", None), self.row("ev_b", "Applications reopen Monday, November 2nd.", "2026-11-02")])
-        self.assertEqual(c["verification_status"], "verified")
-        self.assertEqual(set(c["evidence_refs"]), {"ev_a", "ev_b"})
+        claims = self.run5([self.row("ev_a", "Funds for October are exhausted.", None), self.row("ev_b", "Applications reopen Monday, November 2nd.", "2026-11-02")])
+        # v1.6 (Julia 5.3): each dated statement stays its own claim; no combined "current" value
+        self.assertEqual([c["evidence_refs"] for c in claims], [["ev_a"], ["ev_b"]])
+        self.assertTrue(all(c["verification_status"] == "verified" for c in claims))
+        self.assertTrue(all("|" not in c["claim_value"] for c in claims))
 
     def test_two_values_same_field_same_page_is_conflicting(self):
-        c = self.run5([self.row("ev_c", "Income documents: last 30 days.", None), self.row("ev_d", "Income documents: last 60 days.", None)])
+        c = self.run5([self.row("ev_c", "Income documents: last 30 days.", None), self.row("ev_d", "Income documents: last 60 days.", None)])[0]
         self.assertEqual(c["verification_status"], "conflicting")
         self.assertIsNone(c["claim_value"])
+
+
+class T9_AuditFixes(unittest.TestCase):
+    """Julia's technical review of Agents 3-5 (Nov 3): baseline fixes, one test per finding.
+    Program criteria below are TEST FIXTURES, not real KB programs."""
+    PID = "prog_test_fixture_003"
+
+    def m4(self, criteria, facts):
+        crit = [{"program_id": self.PID, "field_path": "geography[0]", "value": "Sacramento County", "evidence_refs": ["ev_x"]}]
+        crit += [{"program_id": self.PID, "field_path": f"eligibility_criteria[{i}]", "value": v, "evidence_refs": [f"ev_{i}"]}
+                 for i, v in enumerate(criteria)]
+        out = agent_4.handle(req("agent_4", "match_resources", {"candidate_programs": [{"program_id": self.PID, "matched_need_ids": ["need_001"]}],
+                                                                  "case_facts": facts, "needs": NEEDS, "program_criteria": crit}))
+        return out, out["result"]["matches"][0]
+
+    CONFIRMED = [{"fact_id": "f1", "field": "county", "value": "Sacramento County", "confirmation_status": "confirmed"},
+                 {"fact_id": "f2", "field": "household_size", "value": 4, "confirmation_status": "confirmed"}]
+    INCOME = [{"fact_id": "f3", "field": "household_gross_monthly_income", "value": 5000, "confirmation_status": "confirmed"}]
+
+    # --- Agent 4 (scenarios A-F from the review)
+    def test_A_income_present_is_not_a_match_against_the_limit(self):
+        out, m = self.m4(["Gross monthly income at or below $3,000 for a household of 4."], self.CONFIRMED + self.INCOME)
+        self.assertEqual(m["match_status"], "potential_match")
+        self.assertIn("CRITERIA_NOT_EVALUATED", {i["code"] for i in out["issues"]})
+
+    def test_B_income_required_but_unknown_is_reported(self):
+        out, m = self.m4(["Household income within HUD low-income guidelines."], self.CONFIRMED)
+        self.assertIn("household_gross_monthly_income", m["missing_case_facts"])
+        self.assertNotEqual(m["match_status"], "confirmed_mismatch")
+
+    def test_C_income_not_relevant_does_not_downgrade(self):
+        out, m = self.m4([], self.CONFIRMED)
+        self.assertNotIn("household_gross_monthly_income", m["missing_case_facts"])
+        self.assertEqual(m["match_status"], "supported_match")  # nothing left unevaluated
+        out, m = self.m4(["Must live in Sacramento County for six months."], self.CONFIRMED)
+        self.assertNotIn("household_gross_monthly_income", m["missing_case_facts"])  # no income criterion
+
+    def test_D_dependent_children_criterion_is_not_assumed(self):
+        out, m = self.m4(["Household must include a child under 18."], self.CONFIRMED)
+        self.assertEqual(m["match_status"], "potential_match")
+
+    def test_E_crisis_specific_criterion_is_not_assumed(self):
+        out, m = self.m4(["Applicant must have lost a family member (bereavement)."], self.CONFIRMED)
+        self.assertEqual(m["match_status"], "potential_match")
+        self.assertIn("eligibility_criteria[0]", out["issues"][-1]["message"])
+
+    def test_F_geography_ok_but_other_criterion_unproven(self):
+        out, m = self.m4(["Valid lease required.", "Income below the limit."], self.CONFIRMED + self.INCOME)
+        self.assertEqual(m["match_status"], "potential_match")
+        self.assertIn("2 program criteria not yet evaluated", m["explanation"])
+
+    # --- Agent 3
+    def test_3_1_truncation_is_reported(self):
+        r = req("agent_3", "retrieve_candidates", {"needs": [NEEDS[1]], "geography": GEO, "max_candidates": 1})
+        out = agent_3.handle(r)
+        self.assertEqual([c["program_id"] for c in out["result"]["candidate_programs"]], [SJ])  # ordering policy
+        self.assertIn("CANDIDATES_TRUNCATED", {i["code"] for i in out["issues"]})
+        # housing_assistance now has 4 programs (Nov 12); only 1 returned with max_candidates=1
+        note = out["result"]["retrieval_notes"][0]
+        self.assertIn("4 candidate(s) found, 1 returned", note)
+        self.assertIn("CANDIDATES_TRUNCATED", {i["code"] for i in out["issues"]})
+
+    def test_3_2_unknown_geography_is_not_a_coverage_gap(self):
+        out = retrieve(geography=["90210"])
+        codes = {i["code"] for i in out["issues"]}
+        self.assertIn("GEOGRAPHY_UNRESOLVED", codes)
+        self.assertNotIn("COVERAGE_GAP", codes)
+        self.assertEqual(out["status"], "partial")
+
+    def test_3_3_malformed_payload_is_a_structured_error(self):
+        for bad in ({"needs": [{"category": "food_assistance"}], "geography": GEO},
+                    {"needs": "food", "geography": GEO},
+                    {"needs": NEEDS, "geography": GEO, "max_candidates": 0}):
+            out = agent_3.handle(req("agent_3", "retrieve_candidates", bad))
+            self.assertEqual(out["status"], "failed")
+            self.assertEqual(out["issues"][0]["code"], "INPUT_INVALID")
+
+    # --- Agent 5
+    def test_5_1_missing_evidence_is_an_unresolved_question(self):
+        out = agent_5.handle(req("agent_5", "verify_resources", {"programs_to_check": [{"program_id": CALFRESH, "field_paths": ["deadlines"]}]}))
+        self.assertTrue(any("deadlines" in q for q in out["result"]["unresolved_questions"]))
+        self.assertIn("EVIDENCE_MISSING", {i["code"] for i in out["issues"]})
+
+
+class T10_EvidenceMissingNamesProgram(unittest.TestCase):
+    """EVIDENCE_MISSING issues must name the program they belong to (related_ref and message)."""
+
+    def _run5(self, kb, pids_and_fields):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(kb, f)
+        try:
+            return agent_5.handle(req("agent_5", "verify_resources",
+                                      {"programs_to_check": [{"program_id": pid, "field_paths": fields}
+                                                              for pid, fields in pids_and_fields]}),
+                                  kb_path=f.name)
+        finally:
+            os.unlink(f.name)
+
+    def test_each_evidence_missing_names_its_own_program(self):
+        """Two programs, both missing 'deadlines' evidence: each EVIDENCE_MISSING issue names its own program."""
+        kb = {
+            "program_records": [
+                {"program_id": "prog_fix_010"},
+                {"program_id": "prog_fix_011"},
+            ],
+            "evidence_records": [],
+        }
+        out = self._run5(kb, [("prog_fix_010", ["deadlines"]), ("prog_fix_011", ["deadlines"])])
+        em_issues = [i for i in out["issues"] if i["code"] == "EVIDENCE_MISSING"]
+        self.assertEqual(len(em_issues), 2, f"Expected 2 EVIDENCE_MISSING issues, got {len(em_issues)}")
+        refs = {i["related_ref"] for i in em_issues}
+        self.assertEqual(refs, {"prog_fix_010", "prog_fix_011"})
+        for i in em_issues:
+            self.assertIn(i["related_ref"], i["message"],
+                          f"program_id '{i['related_ref']}' must appear in message: {i['message']!r}")
+
+
+RCMID = "prog_food_rivercity_midtown_sac_001"
+RCARDEN = "prog_food_rivercity_arden_sac_001"
+SAPANTRY = "prog_food_salvationarmy_pantry_sac_001"
+SARENT = "prog_housing_salvationarmy_rent_sac_001"
+SFBFS = "prog_food_sfbfs_foodfinder_sac_001"
+EGFB = "prog_food_elkgrove_foodbank_sac_001"
+LSNC = "prog_housing_lsnc_sac_001"
+
+FOOD_NEED = {"need_id": "need_f01", "category": "food_assistance", "subcategory": None,
+             "description": "Need food", "urgency": "high"}
+
+
+class T11_EddReducedHours(unittest.TestCase):
+    """Agent 4 rule: employment_status=reduced_hours (partially unemployed) must never produce a mismatch
+    for EDD Unemployment Insurance. EDD explicitly covers partial unemployment; unknown employment status is
+    not a mismatch reason. (Silver, Nov 12, 2026)"""
+
+    def test_reduced_hours_is_potential_match_not_mismatch(self):
+        """A case with employment_status=reduced_hours and a confirmed Sacramento County location
+        must return potential_match for EDD UI, never confirmed_mismatch."""
+        cand = [{"program_id": UI, "matched_need_ids": ["need_001"]}]
+        facts = [
+            {"fact_id": "f_loc", "field": "county", "value": "Sacramento County",
+             "confirmation_status": "confirmed"},
+            {"fact_id": "f_emp", "field": "employment_status", "value": "reduced_hours",
+             "confirmation_status": "confirmed"},
+        ]
+        m = match(cand, facts)["result"]["matches"][0]
+        self.assertNotEqual(m["match_status"], "confirmed_mismatch",
+                            "reduced_hours (partially unemployed) must not be a mismatch for EDD UI")
+        self.assertIn(m["match_status"], {"potential_match", "supported_match"},
+                      "reduced_hours must yield potential_match or better for EDD UI")
+
+
+class T12_Nov12Programs(unittest.TestCase):
+    """Tests for the Nov 12, 2026 KB additions: food pantries, Salvation Army rent help,
+    River City conflicting Nov 20 availability. (Silver, Nov 12, 2026)"""
+
+    def test_zip_95660_food_need_returns_food_pantry_programs(self):
+        """ZIP 95660 (North Highlands, Sacramento County) + food need must return the food pantry programs."""
+        food_need = [FOOD_NEED]
+        out = retrieve(food_need, geography=["95660"])
+        pids = {c["program_id"] for c in out["result"]["candidate_programs"]}
+        # All six food programs serve Sacramento County; 95660 maps to Sacramento County via ZIP fallback.
+        for expected in (CALFRESH, RCMID, RCARDEN, SAPANTRY, SFBFS, EGFB):
+            self.assertIn(expected, pids,
+                          f"ZIP 95660 + food need should return {expected}")
+
+    def test_salvation_army_rent_help_stays_potential_match_eviction_unknown(self):
+        """Salvation Army rent help must stay potential_match when has_written_eviction_notice is unknown.
+        The KB note on eligibility_criteria[1] says: if unknown, keep potential_match, never a mismatch."""
+        cand = [{"program_id": SARENT, "matched_need_ids": ["need_002"]}]
+        facts = [
+            {"fact_id": "f_loc", "field": "county", "value": "Sacramento County",
+             "confirmation_status": "confirmed"},
+            # has_written_eviction_notice is intentionally absent (unknown)
+        ]
+        m = match(cand, facts)["result"]["matches"][0]
+        self.assertNotEqual(m["match_status"], "confirmed_mismatch",
+                            "Unknown eviction notice must never be a mismatch for Salvation Army rent help")
+        self.assertIn(m["match_status"], {"potential_match", "supported_match"})
+
+    def test_river_city_nov20_availability_is_conflicting(self):
+        """Nov 20 availability for both River City sites must stay conflicting in Agent 5.
+        The distribution page and holiday banner conflict with the calendar PDF."""
+        for pid, ev_id in ((RCMID, "ev_rcfbmt_014"), (RCARDEN, "ev_rcfbar_014")):
+            out = agent_5.handle(req("agent_5", "verify_resources",
+                                    {"programs_to_check": [{"program_id": pid, "field_paths": ["availability"]}],
+                                     "evidence_refs": [], "relevant_case_constraints": []}))
+            conflicting = [c for c in out["result"]["checked_claims"]
+                           if c.get("verification_status") == "conflicting"]
+            self.assertTrue(conflicting,
+                            f"{pid}: expected at least one conflicting availability claim (Nov 20)")
+            ev_ids = {ev for c in conflicting for ev in c.get("evidence_refs", [])}
+            self.assertIn(ev_id, ev_ids,
+                          f"{pid}: {ev_id} must be among the conflicting evidence refs")
 
 
 if __name__ == "__main__":
