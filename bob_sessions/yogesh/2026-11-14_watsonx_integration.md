@@ -7,7 +7,7 @@
      WATSONX_URL=
      WATSONX_MODEL_ID=
      WATSONX_MAX_CALLS=
-   - In `agent_1.py`, define single constants `DEFAULT_WATSONX_MODEL_ID = "ibm/granite-3-8b-instruct"`, `DEFAULT_WATSONX_URL = "https://us-south.ml.cloud.ibm.com"`, `DEFAULT_WATSONX_PROJECT_ID = "119ae616-625c-40c5-bd48-c6c7ec63bef7"`, `DEFAULT_WATSONX_TIMEOUT = 15`, and `DEFAULT_WATSONX_MAX_CALLS = 20`, reading overrides from `os.environ` at call time.
+   - In `agent_1.py`, define single constants `DEFAULT_WATSONX_MODEL_ID = "ibm/granite-3-8b-instruct"`, `DEFAULT_WATSONX_URL = "https://us-south.ml.cloud.ibm.com"`, `DEFAULT_WATSONX_PROJECT_ID = "<project-id>"`, `DEFAULT_WATSONX_TIMEOUT = 15`, and `DEFAULT_WATSONX_MAX_CALLS = 20`, reading overrides from `os.environ` at call time.
 
 2. **Standard-Library HTTP, IAM Token Caching & Call Cap:**
    - Use Python standard library `urllib.request` with an injectable `http_post_fn` hook so unit tests run completely offline.
@@ -45,7 +45,7 @@ Implement `watsonx.ai` Granite chat integration in `navigator/agents/agent_1_2/a
      WATSONX_URL=
      WATSONX_MODEL_ID=
      WATSONX_MAX_CALLS=
-   - In `agent_1.py`, define single constants `DEFAULT_WATSONX_MODEL_ID = "ibm/granite-3-8b-instruct"`, `DEFAULT_WATSONX_URL = "https://us-south.ml.cloud.ibm.com"`, `DEFAULT_WATSONX_PROJECT_ID = "119ae616-625c-40c5-bd48-c6c7ec63bef7"`, `DEFAULT_WATSONX_TIMEOUT = 15`, and `DEFAULT_WATSONX_MAX_CALLS = 20`, reading overrides from `os.environ` at call time.
+   - In `agent_1.py`, define single constants `DEFAULT_WATSONX_MODEL_ID = "ibm/granite-3-8b-instruct"`, `DEFAULT_WATSONX_URL = "https://us-south.ml.cloud.ibm.com"`, `DEFAULT_WATSONX_PROJECT_ID = "<project-id>"`, `DEFAULT_WATSONX_TIMEOUT = 15`, and `DEFAULT_WATSONX_MAX_CALLS = 20`, reading overrides from `os.environ` at call time.
 
 2. **Standard-Library HTTP, IAM Token Caching & Call Cap:**
    - Use Python standard library `urllib.request` with an injectable `http_post_fn` hook so unit tests run completely offline.

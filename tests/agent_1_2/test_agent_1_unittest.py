@@ -838,14 +838,14 @@ class TestAgent1(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Item 6: Module-level WATSONX_* env isolation
 # ---------------------------------------------------------------------------
-_WATSONX_ENV_KEYS = [k for k in os.environ if k.startswith("WATSONX_")]
+_WATSONX_ENV_KEYS = [k for k in os.environ if k.startswith("WATSONX_") and k != "WATSONX_STATE_FILE"]
 _SAVED_WATSONX_ENV: dict = {}
 
 
 def setUpModule():
     """Remove all WATSONX_* env vars before any test in this module runs."""
     global _SAVED_WATSONX_ENV
-    _SAVED_WATSONX_ENV = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_")}
+    _SAVED_WATSONX_ENV = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_") and k != "WATSONX_STATE_FILE"}
 
 
 def tearDownModule():
@@ -862,7 +862,7 @@ class TestWatsonxIntegration(unittest.TestCase):
 
     def setUp(self):
         """Ensure no WATSONX_* env vars leak in from parent environment."""
-        self._stashed = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_")}
+        self._stashed = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_") and k != "WATSONX_STATE_FILE"}
 
     def tearDown(self):
         """Restore any WATSONX_* vars stashed during setUp."""
