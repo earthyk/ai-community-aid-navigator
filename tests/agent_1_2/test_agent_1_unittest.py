@@ -947,7 +947,7 @@ class TestWatsonxIntegration(unittest.TestCase):
             return self._make_wx_response(wx_payload)
 
         self._reset_module()
-        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-123"}):
+        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-123", "WATSONX_PROJECT_ID": "proj-test"}):
             res = handle_agent_1(self._make_req(http_post_fn=fake_http))
 
         self.assertEqual(res["status"], "completed")
@@ -988,7 +988,7 @@ class TestWatsonxIntegration(unittest.TestCase):
             return self._make_wx_response({"proposed_needs": [], "factual_claims": []})
 
         self._reset_module()
-        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-reuse"}):
+        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-reuse", "WATSONX_PROJECT_ID": "proj-test"}):
             handle_agent_1(self._make_req(http_post_fn=fake_http))
             # Second call — must reuse cached token (do NOT reset module state here)
             handle_agent_1(self._make_req(http_post_fn=fake_http))
@@ -1032,7 +1032,7 @@ class TestWatsonxIntegration(unittest.TestCase):
             return _json.dumps(outer).encode()
 
         self._reset_module()
-        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-badjson"}):
+        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-badjson", "WATSONX_PROJECT_ID": "proj-test"}):
             res = handle_agent_1(self._make_req(http_post_fn=fake_http))
 
         self.assertTrue(res["is_mock"])
@@ -1053,7 +1053,7 @@ class TestWatsonxIntegration(unittest.TestCase):
             raise TimeoutError("Connection timed out")
 
         self._reset_module()
-        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-timeout"}):
+        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-timeout", "WATSONX_PROJECT_ID": "proj-test"}):
             res = handle_agent_1(self._make_req(http_post_fn=fake_http))
 
         self.assertTrue(res["is_mock"])
@@ -1156,7 +1156,7 @@ class TestWatsonxIntegration(unittest.TestCase):
         self._reset_module()
         with unittest.mock.patch.dict(
             os.environ,
-            {"WATSONX_APIKEY": "test-key-cap", "WATSONX_MAX_CALLS": "2"},
+            {"WATSONX_APIKEY": "test-key-cap", "WATSONX_PROJECT_ID": "proj-test", "WATSONX_MAX_CALLS": "2"},
         ):
             # 3 calls, cap is 2
             for i in range(3):
@@ -1168,7 +1168,7 @@ class TestWatsonxIntegration(unittest.TestCase):
         # _watsonx_call_count is now 2, which equals MAX_CALLS=2, so next call → fallback.
         with unittest.mock.patch.dict(
             os.environ,
-            {"WATSONX_APIKEY": "test-key-cap", "WATSONX_MAX_CALLS": "2"},
+            {"WATSONX_APIKEY": "test-key-cap", "WATSONX_PROJECT_ID": "proj-test", "WATSONX_MAX_CALLS": "2"},
         ):
             res = handle_agent_1(self._make_req(http_post_fn=fake_http))
 

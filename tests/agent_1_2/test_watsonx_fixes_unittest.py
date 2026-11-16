@@ -1,14 +1,16 @@
 """
-Unit tests for the 7 watsonx integration fixes (Items 1–7).
+Unit tests for the watsonx integration fixes (Items 1–7 and new PR items).
 
 Covers:
   1. Empty-string / whitespace-only env vars fall back to defaults.
   2. Model-injected factual_claims are ignored; trivial/ungrounded quotes rejected.
   3. Model-added need urgency/reason derived from shared rule helper.
-  4. Cross-process persisted call counter and IAM token cache.
+  4. Cross-process persisted call counter (date-based reset); IAM token memory-only.
   5. Single shared timeout budget (<=18 s).
   6. WATSONX_* env var isolation (all cleared by default in this module).
   7. All items tested explicitly.
+  New: supervisor dialog state counter, date rollover, state-file no token, project ID
+       fallback, whitespace APIKEY info severity, canonical need descriptions.
 
 Zero external dependencies.  Run via:
     python -I -m unittest discover -s tests -t .
@@ -29,7 +31,6 @@ import navigator.agents.agent_1_2.agent_1 as a1_mod
 from navigator.agents.agent_1_2.agent_1 import (
     DEFAULT_WATSONX_MAX_CALLS,
     DEFAULT_WATSONX_MODEL_ID,
-    DEFAULT_WATSONX_PROJECT_ID,
     DEFAULT_WATSONX_TIMEOUT,
     DEFAULT_WATSONX_URL,
     _env_int,
@@ -128,11 +129,11 @@ class TestEmptyEnvVars(unittest.TestCase):
 
     def test_env_str_project_id_empty(self):
         with unittest.mock.patch.dict(os.environ, {"WATSONX_PROJECT_ID": ""}):
-            self.assertEqual(_env_str("WATSONX_PROJECT_ID", DEFAULT_WATSONX_PROJECT_ID), DEFAULT_WATSONX_PROJECT_ID)
+            self.assertEqual(_env_str("WATSONX_PROJECT_ID", "fallback"), "fallback")
 
     def test_env_str_project_id_whitespace(self):
         with unittest.mock.patch.dict(os.environ, {"WATSONX_PROJECT_ID": "   "}):
-            self.assertEqual(_env_str("WATSONX_PROJECT_ID", DEFAULT_WATSONX_PROJECT_ID), DEFAULT_WATSONX_PROJECT_ID)
+            self.assertEqual(_env_str("WATSONX_PROJECT_ID", "fallback"), "fallback")
 
     def test_env_str_url_empty(self):
         with unittest.mock.patch.dict(os.environ, {"WATSONX_URL": ""}):
@@ -158,7 +159,12 @@ class TestEmptyEnvVars(unittest.TestCase):
 
             with unittest.mock.patch.dict(
                 os.environ,
-                {"WATSONX_APIKEY": "k", "WATSONX_MAX_CALLS": "", "WATSONX_STATE_FILE": state_path},
+                {
+                    "WATSONX_APIKEY": "k",
+                    "WATSONX_PROJECT_ID": "proj-test",
+                    "WATSONX_MAX_CALLS": "",
+                    "WATSONX_STATE_FILE": state_path,
+                },
             ):
                 # Should not raise ValueError — just use the default cap
                 handle_agent_1(_make_req("I lost my job and need food.", http_post_fn=fake_http))
@@ -180,7 +186,12 @@ class TestEmptyEnvVars(unittest.TestCase):
 
             with unittest.mock.patch.dict(
                 os.environ,
-                {"WATSONX_APIKEY": "k", "WATSONX_TIMEOUT": "", "WATSONX_STATE_FILE": state_path},
+                {
+                    "WATSONX_APIKEY": "k",
+                    "WATSONX_PROJECT_ID": "proj-test",
+                    "WATSONX_TIMEOUT": "",
+                    "WATSONX_STATE_FILE": state_path,
+                },
             ):
                 res = handle_agent_1(_make_req("I lost my job.", http_post_fn=fake_http))
                 self.assertEqual(res["status"], "completed")
@@ -211,7 +222,7 @@ class TestStrictGrounding(unittest.TestCase):
             return _make_wx_response(wx_payload)
         with unittest.mock.patch.dict(
             os.environ,
-            {"WATSONX_APIKEY": "test-key", "WATSONX_STATE_FILE": state_path},
+            {"WATSONX_APIKEY": "test-key", "WATSONX_PROJECT_ID": "proj-test", "WATSONX_STATE_FILE": state_path},
         ):
             return handle_agent_1(_make_req(story, http_post_fn=fake_http))
 
@@ -392,7 +403,7 @@ class TestModelAddedNeedUrgency(unittest.TestCase):
 
             with unittest.mock.patch.dict(
                 os.environ,
-                {"WATSONX_APIKEY": "k", "WATSONX_STATE_FILE": state_path},
+                {"WATSONX_APIKEY": "k", "WATSONX_PROJECT_ID": "proj-test", "WATSONX_STATE_FILE": state_path},
             ):
                 res = handle_agent_1(_make_req(story, http_post_fn=fake_http))
 
@@ -430,7 +441,7 @@ class TestModelAddedNeedUrgency(unittest.TestCase):
 
             with unittest.mock.patch.dict(
                 os.environ,
-                {"WATSONX_APIKEY": "k", "WATSONX_STATE_FILE": state_path},
+                {"WATSONX_APIKEY": "k", "WATSONX_PROJECT_ID": "proj-test", "WATSONX_STATE_FILE": state_path},
             ):
                 res = handle_agent_1(_make_req(story, http_post_fn=fake_http))
 
@@ -442,11 +453,11 @@ class TestModelAddedNeedUrgency(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Item 4: Cross-process persisted call counter and IAM token cache
+# Item 4: Cross-process persisted call counter (date-based)
 # ---------------------------------------------------------------------------
 
 class TestCrossProcessState(unittest.TestCase):
-    """Item 4: call counter and IAM token persist across separate Python subprocesses."""
+    """Item 4: call counter persists across separate Python subprocesses (date-aware)."""
 
     def setUp(self) -> None:
         self._stash = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_")}
@@ -464,6 +475,7 @@ class TestCrossProcessState(unittest.TestCase):
 import os, sys, json, tempfile
 os.environ["WATSONX_STATE_FILE"] = {state_path!r}
 os.environ["WATSONX_APIKEY"] = {apikey!r}
+os.environ["WATSONX_PROJECT_ID"] = "proj-sub"
 # Insert project root so imports work
 sys.path.insert(0, {str(os.path.join(os.path.dirname(__file__), '..', '..')).replace(chr(92), '/')!r})
 import navigator.agents.agent_1_2.agent_1 as a1
@@ -522,7 +534,7 @@ print(a1._get_call_count())
 
             with unittest.mock.patch.dict(
                 os.environ,
-                {"WATSONX_APIKEY": "k", "WATSONX_STATE_FILE": state_path},
+                {"WATSONX_APIKEY": "k", "WATSONX_PROJECT_ID": "proj-test", "WATSONX_STATE_FILE": state_path},
             ):
                 handle_agent_1(_make_req("I lost my job.", http_post_fn=fake_http_fail))
 
@@ -532,54 +544,35 @@ print(a1._get_call_count())
             os.unlink(state_path)
             os.environ.pop("WATSONX_STATE_FILE", None)
 
-    def test_iam_token_persists_across_subprocesses(self):
-        """IAM token persisted by subprocess 1 is reused by subprocess 2 (no second IAM fetch)."""
+    def test_iam_token_not_in_state_file(self):
+        """IAM token must be kept in memory only — the state file must never contain it."""
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
             state_path = tf.name
         try:
-            os.environ["WATSONX_STATE_FILE"] = state_path
-            a1_mod._write_state({})
+            _reset(state_file=state_path)
 
-            code = f"""
-import os, sys, json
-os.environ["WATSONX_STATE_FILE"] = {state_path!r}
-os.environ["WATSONX_APIKEY"] = "k"
-sys.path.insert(0, {str(os.path.join(os.path.dirname(__file__), '..', '..')).replace(chr(92), '/')!r})
-import navigator.agents.agent_1_2.agent_1 as a1
+            def fake_http(url, body, headers):
+                if "iam" in url:
+                    return _make_iam_response(token="mem-only-tok")
+                return _make_wx_response({"proposed_needs": []})
 
-iam_calls = []
-def fake_http(url, body, headers):
-    if "iam" in url:
-        iam_calls.append(1)
-        return json.dumps({{"access_token": "shared-tok", "expires_in": 3600}}).encode()
-    return json.dumps({{"choices": [{{"message": {{"role": "assistant", "content": json.dumps({{"proposed_needs": []}})}}}}]}}).encode()
+            with unittest.mock.patch.dict(
+                os.environ,
+                {"WATSONX_APIKEY": "k", "WATSONX_PROJECT_ID": "proj-test", "WATSONX_STATE_FILE": state_path},
+            ):
+                handle_agent_1(_make_req("I need help.", http_post_fn=fake_http))
 
-req = {{
-    "request_id": "r", "run_id": "r", "case_id": "c", "case_version": 1,
-    "task_type": "understand_story",
-    "payload": {{"story_text": "I need help.", "_http_post_fn": fake_http}},
-}}
-# Reset first, then make one call to populate the token
-a1._write_state({{}})
-a1._watsonx_call_count = 0
-a1._iam_token_cache = ("", 0.0)
-a1.handle_agent_1(req)
-# Check token was persisted
-state = a1._read_state()
-print(state.get("iam_token", ""))
-"""
-            result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30)
-            if result.returncode != 0:
-                raise RuntimeError(f"Subprocess failed:\n{result.stderr}")
-            token_in_state = result.stdout.strip()
-            self.assertEqual(token_in_state, "shared-tok",
-                             "IAM token must be persisted in state file after subprocess call")
-
-            # Read from state file directly to verify
             with open(state_path, "r") as f:
                 state = json.load(f)
-            self.assertEqual(state.get("iam_token"), "shared-tok")
-            self.assertGreater(state.get("iam_token_wall_expires", 0), time.time())
+
+            self.assertNotIn("iam_token", state,
+                             "iam_token must never appear in the state file")
+            self.assertNotIn("access_token", state,
+                             "access_token must never appear in the state file")
+            self.assertNotIn("expires_at", state,
+                             "expires_at must never appear in the state file")
+            self.assertNotIn("iam_token_wall_expires", state,
+                             "iam_token_wall_expires must never appear in the state file")
         finally:
             os.unlink(state_path)
             os.environ.pop("WATSONX_STATE_FILE", None)
@@ -605,9 +598,6 @@ class TestSharedTimeoutBudget(unittest.TestCase):
             state_path = tf.name
         try:
             _reset(state_file=state_path)
-            chat_timeout_used = []
-
-            original_urlopen = __import__("urllib.request", fromlist=["urlopen"]).urlopen
 
             def fake_http(url, body, headers):
                 if "iam" in url:
@@ -616,10 +606,13 @@ class TestSharedTimeoutBudget(unittest.TestCase):
 
             with unittest.mock.patch.dict(
                 os.environ,
-                {"WATSONX_APIKEY": "k", "WATSONX_TIMEOUT": "30", "WATSONX_STATE_FILE": state_path},
+                {
+                    "WATSONX_APIKEY": "k",
+                    "WATSONX_PROJECT_ID": "proj-test",
+                    "WATSONX_TIMEOUT": "30",
+                    "WATSONX_STATE_FILE": state_path,
+                },
             ):
-                # We verify the budget is <= 18 by checking the deadline is set correctly.
-                # The easiest way: measure that IAM exception fallback happens before 18+1 s
                 t0 = time.monotonic()
                 res = handle_agent_1(_make_req("I need help.", http_post_fn=fake_http))
                 elapsed = time.monotonic() - t0
@@ -643,7 +636,12 @@ class TestSharedTimeoutBudget(unittest.TestCase):
 
             with unittest.mock.patch.dict(
                 os.environ,
-                {"WATSONX_APIKEY": "k", "WATSONX_TIMEOUT": "15", "WATSONX_STATE_FILE": state_path},
+                {
+                    "WATSONX_APIKEY": "k",
+                    "WATSONX_PROJECT_ID": "proj-test",
+                    "WATSONX_TIMEOUT": "15",
+                    "WATSONX_STATE_FILE": state_path,
+                },
             ):
                 res = handle_agent_1(_make_req("I need help.", http_post_fn=fake_http_slow_iam))
 
@@ -659,14 +657,16 @@ class TestSharedTimeoutBudget(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestEnvIsolation(unittest.TestCase):
-    """Item 6: WATSONX_* vars must be absent by default in test runs."""
+    """Item 6: WATSONX_* vars must be absent by default in test runs (except WATSONX_STATE_FILE)."""
 
-    def test_no_watsonx_env_vars_present_by_default(self):
-        """After setUpModule clears WATSONX_* vars, none should be present."""
-        wx_vars = {k: v for k, v in os.environ.items() if k.startswith("WATSONX_")}
+    def test_no_sensitive_watsonx_env_vars_present_by_default(self):
+        """After setUpModule clears WATSONX_* vars, sensitive keys must be absent.
+        WATSONX_STATE_FILE is intentionally set by tests/__init__.py for isolation."""
+        sensitive = {k: v for k, v in os.environ.items()
+                     if k.startswith("WATSONX_") and k != "WATSONX_STATE_FILE"}
         self.assertEqual(
-            wx_vars, {},
-            f"WATSONX_* vars must be cleared in test context; found: {wx_vars}",
+            sensitive, {},
+            f"Sensitive WATSONX_* vars must be cleared in test context; found: {sensitive}",
         )
 
     def test_unset_apikey_gives_fallback(self):
@@ -685,6 +685,351 @@ class TestEnvIsolation(unittest.TestCase):
         self.assertIn("WATSONX_FALLBACK", codes)
         fb = next(i for i in res["issues"] if i["code"] == "WATSONX_FALLBACK")
         self.assertEqual(fb["severity"], "info")
+
+
+# ---------------------------------------------------------------------------
+# New: Date-rollover resets call_count to 0
+# ---------------------------------------------------------------------------
+
+class TestDateRollover(unittest.TestCase):
+    """Daily resetting call cap: when stored date != today, call_count resets to 0."""
+
+    def setUp(self) -> None:
+        self._stash = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_")}
+
+    def tearDown(self) -> None:
+        os.environ.update(self._stash)
+        os.environ.pop("WATSONX_STATE_FILE", None)
+
+    def test_stale_date_resets_call_count_to_zero(self):
+        """If the state file contains a past date, _get_call_count() returns 0."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            state_path = tf.name
+        try:
+            os.environ["WATSONX_STATE_FILE"] = state_path
+            # Write state with yesterday's date and a non-zero count
+            a1_mod._write_state({"date": "2000-01-01", "call_count": 99})
+            count = a1_mod._get_call_count()
+            self.assertEqual(count, 0, "Stale date must reset call_count to 0")
+        finally:
+            os.unlink(state_path)
+
+    def test_stale_date_increment_starts_at_one(self):
+        """When date has rolled over, the first _increment_call_count() returns 1."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            state_path = tf.name
+        try:
+            os.environ["WATSONX_STATE_FILE"] = state_path
+            a1_mod._write_state({"date": "2000-01-01", "call_count": 99})
+            new_count = a1_mod._increment_call_count()
+            self.assertEqual(new_count, 1, "After date rollover, first increment must yield 1")
+        finally:
+            os.unlink(state_path)
+
+    def test_state_file_contains_date_and_call_count(self):
+        """After an increment, the state file must contain 'date' and 'call_count'."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            state_path = tf.name
+        try:
+            os.environ["WATSONX_STATE_FILE"] = state_path
+            a1_mod._write_state({})
+            a1_mod._increment_call_count()
+            with open(state_path, "r") as f:
+                state = json.load(f)
+            self.assertIn("date", state)
+            self.assertIn("call_count", state)
+            self.assertEqual(state["date"], date.today().isoformat())
+            self.assertEqual(state["call_count"], 1)
+        finally:
+            os.unlink(state_path)
+
+    def test_supervisor_dialog_with_dummy_apikey_state_counter_stays_zero(self):
+        """Supervisor dialog with WATSONX_APIKEY='dummy' (no project ID) keeps call count at 0."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            state_path = tf.name
+        try:
+            os.environ["WATSONX_STATE_FILE"] = state_path
+            a1_mod._write_state({})
+            a1_mod._watsonx_call_count = 0
+            a1_mod._iam_token_cache = ("", 0.0)
+
+            with unittest.mock.patch.dict(
+                os.environ,
+                {"WATSONX_APIKEY": "dummy", "WATSONX_STATE_FILE": state_path},
+                # Note: WATSONX_PROJECT_ID intentionally absent
+            ):
+                handle_agent_1({
+                    "request_id": "req-sup",
+                    "run_id": "run-sup",
+                    "case_id": "case-sup",
+                    "case_version": 1,
+                    "task_type": "understand_story",
+                    "payload": {"story_text": "I need help paying rent."},
+                })
+
+            count = a1_mod._get_call_count()
+            self.assertEqual(count, 0,
+                             "No network call should be made without WATSONX_PROJECT_ID; call_count must stay 0")
+        finally:
+            os.unlink(state_path)
+            os.environ.pop("WATSONX_STATE_FILE", None)
+
+
+# ---------------------------------------------------------------------------
+# New: State file never contains IAM token
+# ---------------------------------------------------------------------------
+
+class TestStateFileNoToken(unittest.TestCase):
+    """IAM token must be kept in memory only; state file must never contain token data."""
+
+    def setUp(self) -> None:
+        self._stash = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_")}
+
+    def tearDown(self) -> None:
+        os.environ.update(self._stash)
+        os.environ.pop("WATSONX_STATE_FILE", None)
+
+    def test_state_file_never_contains_iam_token(self):
+        """After a successful watsonx call, state file must not contain iam_token or access_token."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            state_path = tf.name
+        try:
+            _reset(state_file=state_path)
+
+            def fake_http(url, body, headers):
+                if "iam" in url:
+                    return _make_iam_response(token="secret-bearer")
+                return _make_wx_response({"proposed_needs": []})
+
+            with unittest.mock.patch.dict(
+                os.environ,
+                {"WATSONX_APIKEY": "k", "WATSONX_PROJECT_ID": "proj-test", "WATSONX_STATE_FILE": state_path},
+            ):
+                handle_agent_1(_make_req("I need help.", http_post_fn=fake_http))
+
+            with open(state_path, "r") as f:
+                state = json.load(f)
+
+            # None of these token-related keys should appear
+            for forbidden_key in ("iam_token", "access_token", "expires_at", "iam_token_wall_expires"):
+                self.assertNotIn(
+                    forbidden_key, state,
+                    f"State file must not contain '{forbidden_key}' (memory-only token)"
+                )
+        finally:
+            os.unlink(state_path)
+
+    def test_state_file_only_contains_date_and_call_count(self):
+        """After a call, the state file must contain exactly 'date' and 'call_count'."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            state_path = tf.name
+        try:
+            _reset(state_file=state_path)
+
+            def fake_http(url, body, headers):
+                if "iam" in url:
+                    return _make_iam_response()
+                return _make_wx_response({"proposed_needs": []})
+
+            with unittest.mock.patch.dict(
+                os.environ,
+                {"WATSONX_APIKEY": "k", "WATSONX_PROJECT_ID": "proj-test", "WATSONX_STATE_FILE": state_path},
+            ):
+                handle_agent_1(_make_req("I need help.", http_post_fn=fake_http))
+
+            with open(state_path, "r") as f:
+                state = json.load(f)
+
+            # Only date and call_count should be present
+            self.assertIn("date", state)
+            self.assertIn("call_count", state)
+            extra_keys = set(state.keys()) - {"date", "call_count"}
+            self.assertEqual(extra_keys, set(),
+                             f"State file must only contain 'date' and 'call_count'; found extra: {extra_keys}")
+        finally:
+            os.unlink(state_path)
+
+
+# ---------------------------------------------------------------------------
+# New: No hard-coded project ID — WATSONX_PROJECT_ID unset/whitespace → fallback
+# ---------------------------------------------------------------------------
+
+class TestProjectIdFallback(unittest.TestCase):
+    """WATSONX_PROJECT_ID unset or whitespace-only must trigger is_mock=True with info issue."""
+
+    def setUp(self) -> None:
+        self._stash = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_")}
+
+    def tearDown(self) -> None:
+        os.environ.update(self._stash)
+        os.environ.pop("WATSONX_STATE_FILE", None)
+
+    def _run_no_network(self, env_patch: dict) -> dict:
+        """Run handle_agent_1 with given env; a fake_http that must never be called."""
+        def should_not_be_called(url, body, headers):
+            raise AssertionError("No network call must be made when project ID is missing")
+
+        with unittest.mock.patch.dict(os.environ, env_patch):
+            return handle_agent_1(_make_req(
+                "I need help paying rent.",
+                http_post_fn=should_not_be_called,
+            ))
+
+    def test_unset_project_id_gives_mock_fallback(self):
+        """With WATSONX_APIKEY set but WATSONX_PROJECT_ID absent, must fall back (is_mock=True, info)."""
+        res = self._run_no_network({"WATSONX_APIKEY": "real-key"})
+        self.assertTrue(res["is_mock"])
+        codes = [i["code"] for i in res["issues"]]
+        self.assertIn("WATSONX_FALLBACK", codes)
+        fb = next(i for i in res["issues"] if i["code"] == "WATSONX_FALLBACK")
+        self.assertEqual(fb["severity"], "info")
+        self.assertIn("WATSONX_PROJECT_ID", fb["message"])
+
+    def test_whitespace_only_project_id_gives_mock_fallback(self):
+        """Whitespace-only WATSONX_PROJECT_ID must be treated as unset."""
+        res = self._run_no_network({"WATSONX_APIKEY": "real-key", "WATSONX_PROJECT_ID": "   "})
+        self.assertTrue(res["is_mock"])
+        codes = [i["code"] for i in res["issues"]]
+        self.assertIn("WATSONX_FALLBACK", codes)
+        fb = next(i for i in res["issues"] if i["code"] == "WATSONX_FALLBACK")
+        self.assertEqual(fb["severity"], "info")
+
+    def test_set_project_id_allows_call(self):
+        """With both WATSONX_APIKEY and WATSONX_PROJECT_ID set, watsonx is called (not mock)."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            state_path = tf.name
+        try:
+            _reset(state_file=state_path)
+
+            def fake_http(url, body, headers):
+                if "iam" in url:
+                    return _make_iam_response()
+                return _make_wx_response({"proposed_needs": []})
+
+            with unittest.mock.patch.dict(
+                os.environ,
+                {
+                    "WATSONX_APIKEY": "real-key",
+                    "WATSONX_PROJECT_ID": "my-project",
+                    "WATSONX_STATE_FILE": state_path,
+                },
+            ):
+                res = handle_agent_1(_make_req("I need help.", http_post_fn=fake_http))
+
+            self.assertFalse(res["is_mock"],
+                             "With both APIKEY and PROJECT_ID set, is_mock must be False")
+        finally:
+            os.unlink(state_path)
+
+
+# ---------------------------------------------------------------------------
+# New: Whitespace APIKEY gives 'info' severity (not 'warning')
+# ---------------------------------------------------------------------------
+
+class TestApikeyInfoSeverity(unittest.TestCase):
+    """Whitespace-only or absent WATSONX_APIKEY must emit WATSONX_FALLBACK at severity='info'."""
+
+    def setUp(self) -> None:
+        self._stash = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_")}
+
+    def tearDown(self) -> None:
+        os.environ.update(self._stash)
+
+    def test_absent_apikey_severity_is_info(self):
+        """Missing WATSONX_APIKEY must yield WATSONX_FALLBACK with severity='info'."""
+        res = handle_agent_1({
+            "request_id": "r", "run_id": "r", "case_id": "c", "case_version": 1,
+            "task_type": "understand_story",
+            "payload": {"story_text": "I need food assistance."},
+        })
+        self.assertTrue(res["is_mock"])
+        fb = next((i for i in res["issues"] if i["code"] == "WATSONX_FALLBACK"), None)
+        self.assertIsNotNone(fb)
+        self.assertEqual(fb["severity"], "info",
+                         "Absent APIKEY fallback must use severity='info', not 'warning'")
+        self.assertIn("WATSONX_APIKEY", fb["message"])
+
+    def test_whitespace_apikey_severity_is_info(self):
+        """Whitespace-only WATSONX_APIKEY must yield WATSONX_FALLBACK with severity='info'."""
+        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "   "}):
+            res = handle_agent_1({
+                "request_id": "r", "run_id": "r", "case_id": "c", "case_version": 1,
+                "task_type": "understand_story",
+                "payload": {"story_text": "I need food assistance."},
+            })
+        self.assertTrue(res["is_mock"])
+        fb = next((i for i in res["issues"] if i["code"] == "WATSONX_FALLBACK"), None)
+        self.assertIsNotNone(fb)
+        self.assertEqual(fb["severity"], "info",
+                         "Whitespace APIKEY fallback must use severity='info', not 'warning'")
+
+
+# ---------------------------------------------------------------------------
+# New: Canonical need descriptions (model-supplied description is not used)
+# ---------------------------------------------------------------------------
+
+class TestCanonicalNeedDescriptions(unittest.TestCase):
+    """Model-supplied 'description' must be replaced by a fixed canonical description."""
+
+    def setUp(self) -> None:
+        self._stash = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_")}
+
+    def tearDown(self) -> None:
+        os.environ.update(self._stash)
+        os.environ.pop("WATSONX_STATE_FILE", None)
+
+    def test_model_description_replaced_by_canonical(self):
+        """Model's 'description' field must not appear in the merged need; canonical used instead."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            state_path = tf.name
+        try:
+            _reset(state_file=state_path)
+            story = "I need some help with crowdfunding to raise money for my community project."
+            model_description = "INVENTED MODEL DESCRIPTION THAT MUST NOT APPEAR"
+
+            def fake_http(url, body, headers):
+                if "iam" in url:
+                    return _make_iam_response()
+                return _make_wx_response({
+                    "proposed_needs": [
+                        {
+                            "category": "crowdfunding_guidance",
+                            "description": model_description,
+                            "original_quote": "help with crowdfunding to raise money for my community project.",
+                        }
+                    ],
+                })
+
+            with unittest.mock.patch.dict(
+                os.environ,
+                {"WATSONX_APIKEY": "k", "WATSONX_PROJECT_ID": "proj-test", "WATSONX_STATE_FILE": state_path},
+            ):
+                res = handle_agent_1(_make_req(story, http_post_fn=fake_http))
+
+            cg = next(
+                (n for n in res["result"]["proposed_needs"] if n["category"] == "crowdfunding_guidance"),
+                None,
+            )
+            self.assertIsNotNone(cg)
+            self.assertNotEqual(cg["description"], model_description,
+                                "Model-supplied description must NOT be used")
+            # Canonical description for crowdfunding_guidance
+            self.assertIn("crowdfunding", cg["description"].lower(),
+                          "Canonical description must mention crowdfunding")
+        finally:
+            os.unlink(state_path)
+
+    def test_canonical_descriptions_are_deterministic(self):
+        """The same category always gets the same canonical description regardless of model output."""
+        from navigator.agents.agent_1_2.agent_1 import _CANONICAL_NEED_DESCRIPTIONS
+        for cat in ("food_assistance", "housing_assistance", "income_assistance",
+                    "utility_assistance", "medical_health_coverage", "debt_hardship",
+                    "material_in_kind", "crowdfunding_guidance", "other_unlisted"):
+            self.assertIn(cat, _CANONICAL_NEED_DESCRIPTIONS,
+                          f"Category '{cat}' must have a canonical description")
+            desc = _CANONICAL_NEED_DESCRIPTIONS[cat]
+            self.assertIsInstance(desc, str)
+            self.assertGreater(len(desc), 5)
 
 
 if __name__ == "__main__":

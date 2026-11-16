@@ -39,7 +39,13 @@ This component slice implements the front-line cognitive intake, crisis understa
 
 ---
 
-## 2. Test Execution
+## 2. State File
+
+The watsonx call counter (`{"date": "YYYY-MM-DD", "call_count": N}`) is stored in the file
+pointed to by `WATSONX_STATE_FILE` (defaults to `<tempdir>/watsonx_agent1_state.json`).
+To reset the counter manually, delete that file or set `WATSONX_STATE_FILE` to a fresh path.
+
+## 3. Test Execution
 
 From repository root:
 ```bash

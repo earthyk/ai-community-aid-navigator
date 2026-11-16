@@ -34,7 +34,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 DEFAULT_WATSONX_MODEL_ID = "ibm/granite-4-h-small"
 DEFAULT_WATSONX_URL = "https://us-south.ml.cloud.ibm.com"
-DEFAULT_WATSONX_PROJECT_ID = "119ae616-625c-40c5-bd48-c6c7ec63bef7"
 DEFAULT_WATSONX_TIMEOUT = 15
 DEFAULT_WATSONX_MAX_CALLS = 20
 
@@ -76,40 +75,28 @@ def _write_state(data: Dict[str, Any]) -> None:
         pass
 
 
+def _today_str() -> str:
+    return date.today().isoformat()
+
+
 def _get_call_count() -> int:
-    return int(_read_state().get("call_count", 0))
+    state = _read_state()
+    if state.get("date") != _today_str():
+        return 0
+    return int(state.get("call_count", 0))
 
 
 def _increment_call_count() -> int:
-    """Increment and persist call counter; return new value."""
+    """Increment and persist call counter; reset to 1 when date has rolled over."""
     state = _read_state()
+    today = _today_str()
+    if state.get("date") != today:
+        state = {"date": today, "call_count": 0}
     new_count = int(state.get("call_count", 0)) + 1
+    state["date"] = today
     state["call_count"] = new_count
     _write_state(state)
     return new_count
-
-
-def _get_persisted_iam_token() -> Tuple[str, float]:
-    """Return (token, expires_at_monotonic_approx) from persisted state."""
-    state = _read_state()
-    token = state.get("iam_token", "")
-    # We store wall-clock expiry; convert to monotonic-equivalent offset
-    wall_expires = float(state.get("iam_token_wall_expires", 0.0))
-    if not token or wall_expires == 0.0:
-        return ("", 0.0)
-    now_wall = time.time()
-    now_mono = time.monotonic()
-    # Map wall-clock expiry to an equivalent monotonic deadline
-    mono_expires = now_mono + (wall_expires - now_wall)
-    return (token, mono_expires)
-
-
-def _persist_iam_token(token: str, expires_in: int) -> None:
-    """Persist IAM token with wall-clock expiry so other processes can reuse it."""
-    state = _read_state()
-    state["iam_token"] = token
-    state["iam_token_wall_expires"] = time.time() + expires_in
-    _write_state(state)
 
 
 # Module-level call counter — kept for backward compatibility with tests that
@@ -756,22 +743,16 @@ def _get_iam_token(
 ) -> str:
     """Return a cached IAM bearer token, refreshing when < 60s from expiry.
 
-    Checks both in-process cache and cross-process persisted cache.
+    Token is kept strictly in memory (_iam_token_cache); never written to disk.
     deadline: monotonic deadline; if remaining budget is too small, raises TimeoutError.
     """
     global _iam_token_cache
 
-    # 1. In-process cache check
+    # In-process cache check (memory only — token is never persisted to disk)
     token, expires_at = _iam_token_cache
     now = time.monotonic()
     if token and now < expires_at - 60:
         return token
-
-    # 2. Cross-process persistent cache check
-    p_token, p_expires_at = _get_persisted_iam_token()
-    if p_token and time.monotonic() < p_expires_at - 60:
-        _iam_token_cache = (p_token, p_expires_at)
-        return p_token
 
     # Need to fetch a new token — compute remaining budget
     # Item 5: use remaining deadline budget for IAM call, not a full separate timeout
@@ -802,19 +783,33 @@ def _get_iam_token(
     expires_in = int(data.get("expires_in", 3600))
     mono_expires = time.monotonic() + expires_in
     _iam_token_cache = (new_token, mono_expires)
-    _persist_iam_token(new_token, expires_in)
+    # Token is kept in memory only — do NOT write to the state file
     return new_token
+
+
+# Canonical descriptions per need category (never use model-supplied text).
+_CANONICAL_NEED_DESCRIPTIONS: Dict[str, str] = {
+    "food_assistance": "Applicant needs food assistance.",
+    "housing_assistance": "Applicant needs housing assistance.",
+    "income_assistance": "Applicant needs income or financial assistance.",
+    "utility_assistance": "Applicant needs utility payment assistance.",
+    "medical_health_coverage": "Applicant needs medical or health coverage.",
+    "debt_hardship": "Applicant is experiencing debt or financial hardship.",
+    "material_in_kind": "Applicant needs material or in-kind support.",
+    "crowdfunding_guidance": "Applicant is seeking crowdfunding guidance.",
+    "other_unlisted": "Applicant has an unlisted assistance need.",
+}
 
 
 def _call_watsonx_chat(
     story_text: str,
     http_post_fn: Optional[Callable] = None,
-) -> Optional[Dict[str, Any]]:
+) -> Tuple[Optional[Dict[str, Any]], int, bool]:
     """
-    Call watsonx.ai text/chat and return parsed JSON dict from the assistant message,
-    or None on any error (timeout, HTTP error, invalid JSON, call cap reached).
+    Call watsonx.ai text/chat and return a tuple (result_dict_or_None, latency_ms, used_call).
+    result_dict_or_None is the parsed JSON dict from the assistant message, or None on any
+    error (timeout, HTTP error, invalid JSON, call cap reached, or missing project ID).
     Privacy: never logs story_text, prompts, API keys, or model output text.
-    Returns (result_dict_or_None, latency_ms, used_call).
 
     Item 5: Uses a single shared deadline budget (<=18 s) across IAM + chat.
     Item 4: Counts ALL attempted calls (including failed/timed-out) in persisted state.
@@ -822,7 +817,7 @@ def _call_watsonx_chat(
     """
     global _watsonx_call_count
 
-    # Item 1: treat empty WATSONX_APIKEY as unset
+    # Treat empty/whitespace WATSONX_APIKEY as unset (same helper as _understand_story)
     apikey = os.environ.get("WATSONX_APIKEY", "").strip()
     if not apikey:
         return None, 0, False
@@ -839,7 +834,10 @@ def _call_watsonx_chat(
     # Item 1: safe reads for other string env vars
     model_id = _env_str("WATSONX_MODEL_ID", DEFAULT_WATSONX_MODEL_ID)
     wx_url = _env_str("WATSONX_URL", DEFAULT_WATSONX_URL).rstrip("/")
-    project_id = _env_str("WATSONX_PROJECT_ID", DEFAULT_WATSONX_PROJECT_ID)
+    # Read WATSONX_PROJECT_ID strictly from env (no hard-coded fallback)
+    project_id = os.environ.get("WATSONX_PROJECT_ID", "").strip()
+    if not project_id:
+        return None, 0, False  # caller handles missing project ID
 
     # Item 5: single shared timeout budget, capped at 18 s (< Supervisor's 30 s limit)
     raw_timeout = _env_int("WATSONX_TIMEOUT", DEFAULT_WATSONX_TIMEOUT)
@@ -962,7 +960,8 @@ def _merge_watsonx_into_result(
                 or q_stripped.lower() not in story.lower()
             ):
                 continue
-            desc = item.get("description", cat.replace("_", " ").title())
+            # Use canonical description per category; never trust model-supplied text
+            desc = _CANONICAL_NEED_DESCRIPTIONS.get(cat, cat.replace("_", " ").title())
             # Item 3: derive urgency from shared rule helper, not hardcoded
             urgency, urgency_reason = urgency_fn(cat, story, q_stripped)
             proposed_needs.append(_make_need(
@@ -1606,8 +1605,11 @@ def _understand_story(
             "note": "unspecified_hardship_cause",
         })
 
-    # 14. watsonx.ai enhancement (only when WATSONX_APIKEY is set)
-    apikey = os.environ.get("WATSONX_APIKEY", "")
+    # 14. watsonx.ai enhancement (only when WATSONX_APIKEY is set and project ID present)
+    # Use the same stripped helper as _call_watsonx_chat so whitespace-only values
+    # are treated as absent.
+    apikey = os.environ.get("WATSONX_APIKEY", "").strip()
+    project_id_env = os.environ.get("WATSONX_PROJECT_ID", "").strip()
     http_post_fn = payload.get("_http_post_fn")  # injectable for tests
 
     if not apikey:
@@ -1616,6 +1618,13 @@ def _understand_story(
             "code": "WATSONX_FALLBACK",
             "severity": "info",
             "message": "WATSONX_APIKEY not set; deterministic result used.",
+        })
+    elif not project_id_env:
+        env["is_mock"] = True
+        env["issues"].append({
+            "code": "WATSONX_FALLBACK",
+            "severity": "info",
+            "message": "WATSONX_PROJECT_ID not set; deterministic result used.",
         })
     else:
         wx_result, latency_ms, used_call = _call_watsonx_chat(
