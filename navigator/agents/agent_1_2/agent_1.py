@@ -19,8 +19,149 @@ Contract invariants enforced (§3.1, §3.2, §4.1):
 - Narrative summary: preserves all substantive needs (job loss, rent, food).
 """
 from datetime import date, datetime, timedelta, timezone
+import json
+import os
 import re
-from typing import Any, Dict, List, Optional
+import tempfile
+import time
+import urllib.parse
+import urllib.request
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+# ---------------------------------------------------------------------------
+# watsonx.ai constants (env overrides read at call time)
+# ---------------------------------------------------------------------------
+
+DEFAULT_WATSONX_MODEL_ID = "ibm/granite-4-h-small"
+DEFAULT_WATSONX_URL = "https://us-south.ml.cloud.ibm.com"
+DEFAULT_WATSONX_TIMEOUT = 15
+DEFAULT_WATSONX_MAX_CALLS = 20
+
+# ---------------------------------------------------------------------------
+# Item 4: Cross-process persistent state (call counter + IAM token cache)
+# ---------------------------------------------------------------------------
+# Overridable in tests via os.environ["WATSONX_STATE_FILE"].
+# Default: <tempdir>/watsonx_agent1_state.json
+
+def _state_file_path() -> str:
+    return os.environ.get(
+        "WATSONX_STATE_FILE",
+        os.path.join(tempfile.gettempdir(), "watsonx_agent1_state.json"),
+    )
+
+
+def _read_state() -> Dict[str, Any]:
+    """Read the persisted state dict; return empty defaults on any error."""
+    try:
+        path = _state_file_path()
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except Exception:
+        return {}
+
+
+def _write_state(data: Dict[str, Any]) -> None:
+    """Atomically write the state dict to the state file."""
+    path = _state_file_path()
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _today_str() -> str:
+    return date.today().isoformat()
+
+
+def _get_call_count() -> int:
+    state = _read_state()
+    if state.get("date") != _today_str():
+        return 0
+    return int(state.get("call_count", 0))
+
+
+def _increment_call_count() -> int:
+    """Increment and persist call counter; reset to 1 when date has rolled over."""
+    state = _read_state()
+    today = _today_str()
+    if state.get("date") != today:
+        state = {"date": today, "call_count": 0}
+    new_count = int(state.get("call_count", 0)) + 1
+    state["date"] = today
+    state["call_count"] = new_count
+    _write_state(state)
+    return new_count
+
+
+# Module-level call counter — kept for backward compatibility with tests that
+# reset a1_mod._watsonx_call_count directly (single-process tests).
+_watsonx_call_count: int = 0
+
+# IAM token cache: (access_token, expires_at_monotonic) — single-process cache.
+# Cross-process caching uses _get_persisted_iam_token / _persist_iam_token.
+_iam_token_cache: Tuple[str, float] = ("", 0.0)
+
+# ---------------------------------------------------------------------------
+# Allowed watsonx merge sets (Contract 4.1)
+# ---------------------------------------------------------------------------
+
+_ALLOWED_NEED_CATEGORIES = frozenset({
+    "food_assistance",
+    "housing_assistance",
+    "income_assistance",
+    "utility_assistance",
+    "medical_health_coverage",
+    "debt_hardship",
+    "material_in_kind",
+    "crowdfunding_guidance",
+    "other_unlisted",
+})
+
+_ALLOWED_FACTUAL_FIELDS = frozenset({
+    "zip_code",
+    "household_size",
+    "children_ages",
+    "employment_status",
+    "rent_amount_monthly",
+    "rent_due_date",
+    "cash_on_hand_approx",
+    "has_written_eviction_notice",
+    "household_gross_monthly_income",
+    "eviction_notice_type",
+    "eviction_notice_date",
+    "triggering_circumstances",
+    "rent_arrears_amount",
+})
+
+_ALLOWED_EMPLOYMENT_STATUS = frozenset({
+    "employed",
+    "laid_off",
+    "reduced_hours",
+    "reduced_pay",
+    "self_employed",
+    "unemployed",
+    "bereaved_survivor",
+    "disabled",
+    "retired",
+    "student",
+    "other",
+})
+
+_ALLOWED_EVICTION_NOTICE_TYPE = frozenset({
+    "3_day_pay_or_quit",
+    "30_day",
+    "60_day",
+    "lockout",
+    "writ",
+    "judgment",
+    "other",
+})
 
 # ---------------------------------------------------------------------------
 # Text normalisation
@@ -536,6 +677,333 @@ def _extract_safety_flags(text: str) -> List[Dict[str, Any]]:
             "note": "Threat of physical harm reported" if is_harm_threat else "Life-safety distress signal reported",
         })
     return flags
+
+
+# ---------------------------------------------------------------------------
+# watsonx.ai helpers (standard-library only, injectable http_post_fn for tests)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Item 1: Helper to read env vars — treat empty/whitespace-only as unset.
+# ---------------------------------------------------------------------------
+
+def _env_str(name: str, default: str) -> str:
+    """Return env var value, falling back to default if absent or blank."""
+    val = os.environ.get(name, "")
+    return val.strip() if val.strip() else default
+
+
+def _env_int(name: str, default: int) -> int:
+    """Return env var as int, falling back to default if absent, blank, or non-integer."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+# ---------------------------------------------------------------------------
+# Item 3: Shared urgency helper for model-added proposed_needs.
+# Derives urgency from story/quote signals; never hardcodes "high".
+# ---------------------------------------------------------------------------
+
+_IMMEDIATE_SIGNAL_RE = re.compile(
+    r"\b(lock(?:ed)?\s+(?:us|me)\s+out|change\s+the\s+locks|actual\s+lockout|"
+    r"eviction\s+notice|3[-\s]day\s+notice|sleeping\s+in\s+(?:my|our|the)\s+car|"
+    r"homeless|no\s+shelter|disconnection\s+notice|shut\s*off\s+notice|"
+    r"past\s+due|overdue|behind\s+on\s+rent|was\s+due)\b",
+    re.IGNORECASE,
+)
+
+
+def _wx_urgency(category: str, story: str, original_quote: str) -> Tuple[str, str]:
+    """
+    Return (urgency, urgency_reason) for a model-identified proposed_need.
+    Checks story and quote for urgent signals; defaults to 'medium'.
+    """
+    combined = (story + " " + original_quote).lower()
+    if _IMMEDIATE_SIGNAL_RE.search(combined):
+        return "immediate", "Urgent signal detected in story or quote"
+    # High-urgency patterns: eviction threats, food shortage, job loss
+    if re.search(
+        r"\b(evict|threaten|lock\s+out|hungry|running\s+low\s+on\s+food|"
+        r"laid\s+off|fired|lost\s+(?:my|our)\s+job|no\s+food|not\s+enough\s+food)\b",
+        combined,
+    ):
+        return "high", "High-urgency signal detected in story or quote"
+    return "medium", "AI-identified need; no urgent signals detected"
+
+
+def _get_iam_token(
+    apikey: str,
+    http_post_fn: Optional[Callable] = None,
+    deadline: Optional[float] = None,
+) -> str:
+    """Return a cached IAM bearer token, refreshing when < 60s from expiry.
+
+    Token is kept strictly in memory (_iam_token_cache); never written to disk.
+    deadline: monotonic deadline; if remaining budget is too small, raises TimeoutError.
+    """
+    global _iam_token_cache
+
+    # In-process cache check (memory only — token is never persisted to disk)
+    token, expires_at = _iam_token_cache
+    now = time.monotonic()
+    if token and now < expires_at - 60:
+        return token
+
+    # Need to fetch a new token — compute remaining budget
+    # Item 5: use remaining deadline budget for IAM call, not a full separate timeout
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("No time budget remaining for IAM token fetch")
+        iam_timeout = max(1, int(remaining))
+    else:
+        iam_timeout = _env_int("WATSONX_TIMEOUT", DEFAULT_WATSONX_TIMEOUT)
+
+    iam_url = "https://iam.cloud.ibm.com/identity/token"
+    body = urllib.parse.urlencode({
+        "grant_type": "urn:ibm:params:oauth:grant-type:apikey",
+        "apikey": apikey,
+    }).encode()
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+    if http_post_fn is not None:
+        resp_bytes = http_post_fn(iam_url, body, headers)
+    else:
+        req = urllib.request.Request(iam_url, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=iam_timeout) as resp:
+            resp_bytes = resp.read()
+
+    data = json.loads(resp_bytes)
+    new_token = data["access_token"]
+    expires_in = int(data.get("expires_in", 3600))
+    mono_expires = time.monotonic() + expires_in
+    _iam_token_cache = (new_token, mono_expires)
+    # Token is kept in memory only — do NOT write to the state file
+    return new_token
+
+
+# Canonical descriptions per need category (never use model-supplied text).
+_CANONICAL_NEED_DESCRIPTIONS: Dict[str, str] = {
+    "food_assistance": "Applicant needs food assistance.",
+    "housing_assistance": "Applicant needs housing assistance.",
+    "income_assistance": "Applicant needs income or financial assistance.",
+    "utility_assistance": "Applicant needs utility payment assistance.",
+    "medical_health_coverage": "Applicant needs medical or health coverage.",
+    "debt_hardship": "Applicant is experiencing debt or financial hardship.",
+    "material_in_kind": "Applicant needs material or in-kind support.",
+    "crowdfunding_guidance": "Applicant is seeking crowdfunding guidance.",
+    "other_unlisted": "Applicant has an unlisted assistance need.",
+}
+
+
+def _call_watsonx_chat(
+    story_text: str,
+    http_post_fn: Optional[Callable] = None,
+) -> Tuple[Optional[Dict[str, Any]], int, bool]:
+    """
+    Call watsonx.ai text/chat and return a tuple (result_dict_or_None, latency_ms, used_call).
+    result_dict_or_None is the parsed JSON dict from the assistant message, or None on any
+    error (timeout, HTTP error, invalid JSON, call cap reached, or missing project ID).
+    Privacy: never logs story_text, prompts, API keys, or model output text.
+
+    Item 5: Uses a single shared deadline budget (<=18 s) across IAM + chat.
+    Item 4: Counts ALL attempted calls (including failed/timed-out) in persisted state.
+    Item 1: Empty/whitespace env vars fall back to defaults.
+    """
+    global _watsonx_call_count
+
+    # Treat empty/whitespace WATSONX_APIKEY as unset (same helper as _understand_story)
+    apikey = os.environ.get("WATSONX_APIKEY", "").strip()
+    if not apikey:
+        return None, 0, False
+
+    # Item 1: safe int parse for MAX_CALLS
+    max_calls = _env_int("WATSONX_MAX_CALLS", DEFAULT_WATSONX_MAX_CALLS)
+
+    # Item 4: check persisted cross-process call count (use whichever is larger)
+    persisted_count = _get_call_count()
+    effective_count = max(_watsonx_call_count, persisted_count)
+    if effective_count >= max_calls:
+        return None, 0, False  # call cap reached
+
+    # Item 1: safe reads for other string env vars
+    model_id = _env_str("WATSONX_MODEL_ID", DEFAULT_WATSONX_MODEL_ID)
+    wx_url = _env_str("WATSONX_URL", DEFAULT_WATSONX_URL).rstrip("/")
+    # Read WATSONX_PROJECT_ID strictly from env (no hard-coded fallback)
+    project_id = os.environ.get("WATSONX_PROJECT_ID", "").strip()
+    if not project_id:
+        return None, 0, False  # caller handles missing project ID
+
+    # Item 5: single shared timeout budget, capped at 18 s (< Supervisor's 30 s limit)
+    raw_timeout = _env_int("WATSONX_TIMEOUT", DEFAULT_WATSONX_TIMEOUT)
+    budget = min(raw_timeout, 18)
+    deadline = time.monotonic() + budget
+
+    endpoint = f"{wx_url}/ml/v1/text/chat?version=2024-05-31"
+
+    system_prompt = (
+        "You are an intake assistant for a community aid navigator. "
+        "Extract structured crisis information from the applicant story. "
+        "Return ONLY a JSON object with one optional key: "
+        "\"proposed_needs\" (array). "
+        "Each proposed_need: {category, description, original_quote}. "
+        "Do NOT include urgency — it is determined by rules. "
+        "Do NOT return factual_claims — facts are extracted by deterministic rules. "
+        "Do NOT invent information not stated in the story. "
+        "Each category MUST be exactly one of: food_assistance, housing_assistance, "
+        "income_assistance, utility_assistance, medical_health_coverage, debt_hardship, "
+        "material_in_kind, crowdfunding_guidance, other_unlisted. "
+        "Each original_quote MUST be copied word for word from the story."
+    )
+
+    payload = {
+        "model_id": model_id,
+        "project_id": project_id,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": story_text},
+        ],
+        "parameters": {
+            "temperature": 0,
+            "max_new_tokens": 512,
+        },
+    }
+    body = json.dumps(payload).encode()
+
+    # Item 4: increment persisted call count before the attempt (counts failures too)
+    new_count = _increment_call_count()
+    _watsonx_call_count = new_count
+
+    try:
+        # Item 5: pass remaining deadline budget to IAM fetch
+        bearer = _get_iam_token(apikey, http_post_fn=http_post_fn, deadline=deadline)
+    except Exception:
+        return None, 0, True  # used_call=True: call was attempted and counted
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {bearer}",
+    }
+
+    # Item 5: remaining budget for the actual chat call
+    remaining = deadline - time.monotonic()
+    chat_timeout = max(1, int(remaining))
+
+    t0 = time.monotonic()
+    try:
+        if http_post_fn is not None:
+            resp_bytes = http_post_fn(endpoint, body, headers)
+        else:
+            req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=chat_timeout) as resp:
+                resp_bytes = resp.read()
+    except Exception:
+        return None, 0, True  # counted but failed
+
+    latency_ms = int((time.monotonic() - t0) * 1000)
+
+    try:
+        outer = json.loads(resp_bytes)
+        # watsonx chat response: choices[0].message.content
+        content = outer["choices"][0]["message"]["content"]
+        # Strip markdown fences if present
+        content = re.sub(r"^```(?:json)?\s*", "", content.strip(), flags=re.IGNORECASE)
+        content = re.sub(r"\s*```$", "", content.strip())
+        result = json.loads(content)
+        if not isinstance(result, dict):
+            return None, latency_ms, True
+    except Exception:
+        return None, latency_ms, True
+
+    return result, latency_ms, True
+
+
+_WX_CATEGORY_ALIASES = {
+    "housing": "housing_assistance", "rent": "housing_assistance",
+    "mortgage": "housing_assistance", "shelter": "housing_assistance",
+    "food": "food_assistance",
+    "income": "income_assistance", "employment": "income_assistance",
+    "unemployment": "income_assistance",
+    "utility": "utility_assistance", "utilities": "utility_assistance",
+    "medical": "medical_health_coverage", "health": "medical_health_coverage",
+    "healthcare": "medical_health_coverage", "health_care": "medical_health_coverage",
+    "debt": "debt_hardship",
+}
+
+
+def _normalize_wx_category(raw: Any) -> str:
+    """Map a model category such as 'Housing' to the contract value 'housing_assistance'."""
+    c = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if c in _ALLOWED_NEED_CATEGORIES:
+        return c
+    return _WX_CATEGORY_ALIASES.get(c, c)
+
+
+def _merge_watsonx_into_result(
+    wx_result: Dict[str, Any],
+    story: str,
+    facts: List[Dict[str, Any]],
+    proposed_needs: List[Dict[str, Any]],
+    need_idx: int,
+    fact_idx: int,
+    urgency_fn: Callable,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, int]:
+    """
+    Merge strictly validated proposed_needs additions from watsonx into rule-derived needs.
+    Never modifies safety_or_official_deadline_flags.
+    Never trusts model urgency — always derives from rules via urgency_fn.
+    Item 2: factual_claims from the model are ignored (100% rule-based).
+    Item 2: original_quote must be substantive (>=8 chars, >=2 words).
+    """
+    existing_need_cats = {n["category"] for n in proposed_needs}
+
+    # Merge proposed_needs only (Item 2: factual_claims section removed)
+    wx_needs = wx_result.get("proposed_needs", [])
+    if isinstance(wx_needs, list):
+        for item in wx_needs:
+            if not isinstance(item, dict):
+                continue
+            cat = _normalize_wx_category(item.get("category", ""))
+            if cat not in _ALLOWED_NEED_CATEGORIES:
+                continue
+            if cat in existing_need_cats:
+                continue
+            original_quote = item.get("original_quote", "")
+            q_stripped = original_quote.strip()
+            # Item 2: Substantive grounding check:
+            #   - quote must be at least 8 characters
+            #   - quote must contain at least 2 words
+            #   - quote must appear verbatim in story (case-insensitive)
+            if (
+                len(q_stripped) < 8
+                or len(q_stripped.split()) < 2
+                or q_stripped.lower() not in story.lower()
+            ):
+                continue
+            # Use canonical description per category; never trust model-supplied text
+            desc = _CANONICAL_NEED_DESCRIPTIONS.get(cat, cat.replace("_", " ").title())
+            # Item 3: derive urgency from shared rule helper, not hardcoded
+            urgency, urgency_reason = urgency_fn(cat, story, q_stripped)
+            proposed_needs.append(_make_need(
+                cat,
+                need_idx,
+                description=str(desc)[:200],
+                original_quote=original_quote,
+                urgency=urgency,
+                urgency_reason=urgency_reason,
+            ))
+            existing_need_cats.add(cat)
+            need_idx += 1
+
+    # Item 2: factual_claims from the model are intentionally ignored.
+    # All factual_claims are 100% rule-derived.
+
+    return facts, proposed_needs, need_idx, fact_idx
 
 
 def handle_agent_1(
@@ -1161,6 +1629,61 @@ def _understand_story(
             "quote": story_raw,
             "note": "unspecified_hardship_cause",
         })
+
+    # 14. watsonx.ai enhancement (only when WATSONX_APIKEY is set and project ID present)
+    # Use the same stripped helper as _call_watsonx_chat so whitespace-only values
+    # are treated as absent.
+    apikey = os.environ.get("WATSONX_APIKEY", "").strip()
+    project_id_env = os.environ.get("WATSONX_PROJECT_ID", "").strip()
+    http_post_fn = payload.get("_http_post_fn")  # injectable for tests
+
+    if not apikey:
+        env["is_mock"] = True
+        env["issues"].append({
+            "code": "WATSONX_FALLBACK",
+            "severity": "info",
+            "message": "WATSONX_APIKEY not set; deterministic result used.",
+        })
+    elif not project_id_env:
+        env["is_mock"] = True
+        env["issues"].append({
+            "code": "WATSONX_FALLBACK",
+            "severity": "info",
+            "message": "WATSONX_PROJECT_ID not set; deterministic result used.",
+        })
+    else:
+        wx_result, latency_ms, used_call = _call_watsonx_chat(
+            story_text=story,
+            http_post_fn=http_post_fn,
+        )
+
+        if wx_result is None:
+            # Fallback: timeout, HTTP error, invalid JSON, or cap reached
+            env["is_mock"] = True
+            env["issues"].append({
+                "code": "WATSONX_FALLBACK",
+                "severity": "warning",
+                "message": "watsonx.ai call failed or capped; deterministic result used.",
+            })
+        else:
+            # Item 3: use shared _wx_urgency helper (not hardcoded "high")
+            facts, proposed_needs, need_idx, fact_idx = _merge_watsonx_into_result(
+                wx_result=wx_result,
+                story=story,
+                facts=facts,
+                proposed_needs=proposed_needs,
+                need_idx=need_idx,
+                fact_idx=fact_idx,
+                urgency_fn=_wx_urgency,
+            )
+            env["is_mock"] = False
+            env["issues"].append({
+                "code": "WATSONX_USED",
+                "severity": "info",
+                "message": "watsonx.ai call succeeded.",
+                "call_count": _watsonx_call_count,
+                "latency_ms": latency_ms,
+            })
 
     env["result"] = {
         "narrative_summary": summary,

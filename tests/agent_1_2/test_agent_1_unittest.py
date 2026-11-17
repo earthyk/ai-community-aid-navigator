@@ -3,7 +3,9 @@ Standard-Library Unittest Suite for Agent 1 (v6.1)
 Zero external dependencies (Runs via `python -m unittest discover -s tests -t .`).
 """
 from datetime import date
+import os
 import unittest
+import unittest.mock
 
 from navigator.agents.agent_1_2.agent_1 import handle_agent_1
 
@@ -831,6 +833,348 @@ class TestAgent1(unittest.TestCase):
         flags = res["result"].get("safety_or_official_deadline_flags", [])
         safety = [f for f in flags if f.get("type") == "safety"]
         self.assertGreaterEqual(len(safety), 1)
+
+
+# ---------------------------------------------------------------------------
+# Item 6: Module-level WATSONX_* env isolation
+# ---------------------------------------------------------------------------
+_WATSONX_ENV_KEYS = [k for k in os.environ if k.startswith("WATSONX_") and k != "WATSONX_STATE_FILE"]
+_SAVED_WATSONX_ENV: dict = {}
+
+
+def setUpModule():
+    """Remove all WATSONX_* env vars before any test in this module runs."""
+    global _SAVED_WATSONX_ENV
+    _SAVED_WATSONX_ENV = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_") and k != "WATSONX_STATE_FILE"}
+
+
+def tearDownModule():
+    """Restore WATSONX_* env vars after all tests in this module complete."""
+    os.environ.update(_SAVED_WATSONX_ENV)
+
+
+class TestWatsonxIntegration(unittest.TestCase):
+    """
+    Offline mocked tests for watsonx.ai integration in _understand_story.
+    All network calls are intercepted via the _http_post_fn hook; WATSONX_APIKEY
+    is controlled via os.environ patching.  Zero external dependencies.
+    """
+
+    def setUp(self):
+        """Ensure no WATSONX_* env vars leak in from parent environment."""
+        self._stashed = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("WATSONX_") and k != "WATSONX_STATE_FILE"}
+
+    def tearDown(self):
+        """Restore any WATSONX_* vars stashed during setUp."""
+        os.environ.update(self._stashed)
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    _STORY = (
+        "I lost my job last month and can't pay rent in 95823. "
+        "We also need help with crowdfunding to get back on our feet."
+    )
+
+    @staticmethod
+    def _reset_module():
+        """Reset module-level watsonx state before a test (in-process + persisted)."""
+        import navigator.agents.agent_1_2.agent_1 as a1_mod
+        a1_mod._watsonx_call_count = 0
+        a1_mod._iam_token_cache = ("", 0.0)
+        # Also clear the cross-process persistent state file
+        a1_mod._write_state({})
+
+    def _make_req(self, story=None, http_post_fn=None):
+        payload = {
+            "story_text": story or self._STORY,
+        }
+        if http_post_fn is not None:
+            payload["_http_post_fn"] = http_post_fn
+        return {
+            "request_id": "req-wx-test",
+            "run_id": "run-wx-test",
+            "case_id": "case-wx-test",
+            "case_version": 1,
+            "task_type": "understand_story",
+            "payload": payload,
+        }
+
+    @staticmethod
+    def _make_iam_response(token="tok-abc", expires_in=3600):
+        import json
+        return json.dumps({
+            "access_token": token,
+            "expires_in": expires_in,
+            "token_type": "Bearer",
+        }).encode()
+
+    @staticmethod
+    def _make_wx_response(content_dict):
+        import json
+        content_json = json.dumps(content_dict)
+        outer = {
+            "choices": [
+                {"message": {"role": "assistant", "content": content_json}}
+            ]
+        }
+        return json.dumps(outer).encode()
+
+    # ------------------------------------------------------------------
+    # Test 1: mocked success + WATSONX_USED issue appended
+    # ------------------------------------------------------------------
+    def test_mocked_success_watsonx_used_issue(self):
+        from navigator.agents.agent_1_2.agent_1 import handle_agent_1
+
+        wx_payload = {
+            "proposed_needs": [
+                {
+                    "category": "crowdfunding_guidance",
+                    "description": "Help with crowdfunding",
+                    "original_quote": "We also need help with crowdfunding to get back on our feet.",
+                }
+            ],
+            "factual_claims": [],
+        }
+
+        calls = []
+
+        def fake_http(url, body, headers):
+            calls.append(url)
+            if "iam.cloud.ibm.com" in url:
+                return self._make_iam_response()
+            return self._make_wx_response(wx_payload)
+
+        self._reset_module()
+        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-123", "WATSONX_PROJECT_ID": "proj-test"}):
+            res = handle_agent_1(self._make_req(http_post_fn=fake_http))
+
+        self.assertEqual(res["status"], "completed")
+        self.assertFalse(res["is_mock"])
+
+        issue_codes = [i["code"] for i in res["issues"]]
+        self.assertIn("WATSONX_USED", issue_codes)
+        wx_issue = next(i for i in res["issues"] if i["code"] == "WATSONX_USED")
+        self.assertIn("call_count", wx_issue)
+        self.assertIn("latency_ms", wx_issue)
+        # Privacy: no story text, no prompt, no model output in issues
+        self.assertNotIn(self._STORY, str(res["issues"]))
+
+        # crowdfunding_guidance should have been merged
+        cats = [n["category"] for n in res["result"]["proposed_needs"]]
+        self.assertIn("crowdfunding_guidance", cats)
+
+        # Urgency must come from rules (not model): rule default = "high"
+        cg_need = next(n for n in res["result"]["proposed_needs"] if n["category"] == "crowdfunding_guidance")
+        self.assertEqual(cg_need["urgency"], "high")
+
+        # IAM + watsonx calls both made
+        self.assertTrue(any("iam.cloud.ibm.com" in c for c in calls))
+        self.assertTrue(any("ml/v1/text/chat" in c for c in calls))
+
+    # ------------------------------------------------------------------
+    # Test 2: IAM token is reused across two calls (only one IAM request)
+    # ------------------------------------------------------------------
+    def test_iam_token_reused_across_two_calls(self):
+        from navigator.agents.agent_1_2.agent_1 import handle_agent_1
+
+        iam_call_count = []
+
+        def fake_http(url, body, headers):
+            if "iam.cloud.ibm.com" in url:
+                iam_call_count.append(1)
+                return self._make_iam_response(expires_in=3600)
+            return self._make_wx_response({"proposed_needs": [], "factual_claims": []})
+
+        self._reset_module()
+        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-reuse", "WATSONX_PROJECT_ID": "proj-test"}):
+            handle_agent_1(self._make_req(http_post_fn=fake_http))
+            # Second call — must reuse cached token (do NOT reset module state here)
+            handle_agent_1(self._make_req(http_post_fn=fake_http))
+
+        self.assertEqual(len(iam_call_count), 1, "IAM token should be fetched only once")
+
+    # ------------------------------------------------------------------
+    # Test 3: WATSONX_APIKEY unset → is_mock=True, WATSONX_FALLBACK info
+    # ------------------------------------------------------------------
+    def test_unset_apikey_fallback(self):
+        from navigator.agents.agent_1_2.agent_1 import handle_agent_1
+
+        self._reset_module()
+        with unittest.mock.patch.dict(os.environ, {}, clear=True):
+            res = handle_agent_1(self._make_req())
+
+        self.assertTrue(res["is_mock"])
+        issue_codes = [i["code"] for i in res["issues"]]
+        self.assertIn("WATSONX_FALLBACK", issue_codes)
+        fb_issue = next(i for i in res["issues"] if i["code"] == "WATSONX_FALLBACK")
+        self.assertEqual(fb_issue["severity"], "info")
+        # Deterministic result still populated
+        self.assertIsNotNone(res["result"].get("proposed_needs"))
+
+    # ------------------------------------------------------------------
+    # Test 4: invalid JSON from model → warning WATSONX_FALLBACK
+    # ------------------------------------------------------------------
+    def test_invalid_json_fallback(self):
+        import json as _json
+        from navigator.agents.agent_1_2.agent_1 import handle_agent_1
+
+        def fake_http(url, body, headers):
+            if "iam.cloud.ibm.com" in url:
+                return self._make_iam_response()
+            # Return outer valid JSON but content is not JSON
+            outer = {
+                "choices": [
+                    {"message": {"role": "assistant", "content": "not valid json }{{"}}
+                ]
+            }
+            return _json.dumps(outer).encode()
+
+        self._reset_module()
+        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-badjson", "WATSONX_PROJECT_ID": "proj-test"}):
+            res = handle_agent_1(self._make_req(http_post_fn=fake_http))
+
+        self.assertTrue(res["is_mock"])
+        issue_codes = [i["code"] for i in res["issues"]]
+        self.assertIn("WATSONX_FALLBACK", issue_codes)
+        fb_issue = next(i for i in res["issues"] if i["code"] == "WATSONX_FALLBACK")
+        self.assertEqual(fb_issue["severity"], "warning")
+
+    # ------------------------------------------------------------------
+    # Test 5: timeout/HTTP exception → warning WATSONX_FALLBACK
+    # ------------------------------------------------------------------
+    def test_http_exception_fallback(self):
+        from navigator.agents.agent_1_2.agent_1 import handle_agent_1
+
+        def fake_http(url, body, headers):
+            if "iam.cloud.ibm.com" in url:
+                return self._make_iam_response()
+            raise TimeoutError("Connection timed out")
+
+        self._reset_module()
+        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-timeout", "WATSONX_PROJECT_ID": "proj-test"}):
+            res = handle_agent_1(self._make_req(http_post_fn=fake_http))
+
+        self.assertTrue(res["is_mock"])
+        issue_codes = [i["code"] for i in res["issues"]]
+        self.assertIn("WATSONX_FALLBACK", issue_codes)
+        fb_issue = next(i for i in res["issues"] if i["code"] == "WATSONX_FALLBACK")
+        self.assertEqual(fb_issue["severity"], "warning")
+
+    # ------------------------------------------------------------------
+    # Test 6: ungrounded quote (not in story) must be rejected
+    # ------------------------------------------------------------------
+    def test_ungrounded_quote_rejected(self):
+        from navigator.agents.agent_1_2.agent_1 import handle_agent_1
+
+        wx_payload = {
+            "proposed_needs": [
+                {
+                    "category": "crowdfunding_guidance",
+                    "description": "Crowdfunding help",
+                    "original_quote": "This text does not appear in the story at all.",
+                }
+            ],
+            "factual_claims": [],
+        }
+
+        def fake_http(url, body, headers):
+            if "iam.cloud.ibm.com" in url:
+                return self._make_iam_response()
+            return self._make_wx_response(wx_payload)
+
+        self._reset_module()
+        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-ungrounded"}):
+            res = handle_agent_1(self._make_req(http_post_fn=fake_http))
+
+        cats = [n["category"] for n in res["result"]["proposed_needs"]]
+        self.assertNotIn("crowdfunding_guidance", cats,
+                         "Ungrounded quote must be rejected from merge")
+
+    # ------------------------------------------------------------------
+    # Test 7: invalid category / invalid enum value rejected
+    # ------------------------------------------------------------------
+    def test_invalid_category_and_enum_rejected(self):
+        from navigator.agents.agent_1_2.agent_1 import handle_agent_1
+
+        story = "I lost my job last month and can't pay rent in 95823."
+        wx_payload = {
+            "proposed_needs": [
+                {
+                    "category": "totally_made_up_category",
+                    "description": "Whatever",
+                    "original_quote": "I lost my job last month",
+                }
+            ],
+            "factual_claims": [
+                {
+                    "field": "employment_status",
+                    "value": "not_a_real_enum_value",
+                },
+                {
+                    "field": "eviction_notice_type",
+                    "value": "banana",
+                },
+            ],
+        }
+
+        def fake_http(url, body, headers):
+            if "iam.cloud.ibm.com" in url:
+                return self._make_iam_response()
+            return self._make_wx_response(wx_payload)
+
+        self._reset_module()
+        with unittest.mock.patch.dict(os.environ, {"WATSONX_APIKEY": "test-key-invalid-cat"}):
+            res = handle_agent_1(self._make_req(story=story, http_post_fn=fake_http))
+
+        cats = [n["category"] for n in res["result"]["proposed_needs"]]
+        self.assertNotIn("totally_made_up_category", cats)
+        fact_fields = [f["field"] for f in res["result"]["factual_claims"]]
+        # employment_status is already set by rules, so the invalid model value would
+        # be blocked either by existing-field guard or enum guard.
+        # eviction_notice_type with "banana" must never appear.
+        for f in res["result"]["factual_claims"]:
+            if f["field"] == "eviction_notice_type":
+                self.assertNotEqual(f["value"], "banana")
+
+    # ------------------------------------------------------------------
+    # Test 8: WATSONX_MAX_CALLS cap enforcement
+    # ------------------------------------------------------------------
+    def test_max_calls_cap_enforced(self):
+        import navigator.agents.agent_1_2.agent_1 as a1_mod
+        from navigator.agents.agent_1_2.agent_1 import handle_agent_1
+
+        wx_calls = []
+
+        def fake_http(url, body, headers):
+            if "iam.cloud.ibm.com" in url:
+                return self._make_iam_response()
+            wx_calls.append(1)
+            return self._make_wx_response({"proposed_needs": [], "factual_claims": []})
+
+        self._reset_module()
+        with unittest.mock.patch.dict(
+            os.environ,
+            {"WATSONX_APIKEY": "test-key-cap", "WATSONX_PROJECT_ID": "proj-test", "WATSONX_MAX_CALLS": "2"},
+        ):
+            # 3 calls, cap is 2
+            for i in range(3):
+                handle_agent_1(self._make_req(http_post_fn=fake_http))
+
+        self.assertEqual(len(wx_calls), 2, "watsonx endpoint must not be called more than MAX_CALLS times")
+
+        # The third call (index 2) should have been a cap-triggered fallback.
+        # _watsonx_call_count is now 2, which equals MAX_CALLS=2, so next call → fallback.
+        with unittest.mock.patch.dict(
+            os.environ,
+            {"WATSONX_APIKEY": "test-key-cap", "WATSONX_PROJECT_ID": "proj-test", "WATSONX_MAX_CALLS": "2"},
+        ):
+            res = handle_agent_1(self._make_req(http_post_fn=fake_http))
+
+        self.assertTrue(res["is_mock"])
+        issue_codes = [i["code"] for i in res["issues"]]
+        self.assertIn("WATSONX_FALLBACK", issue_codes)
 
 
 if __name__ == "__main__":
