@@ -854,7 +854,11 @@ def _call_watsonx_chat(
         "Each proposed_need: {category, description, original_quote}. "
         "Do NOT include urgency — it is determined by rules. "
         "Do NOT return factual_claims — facts are extracted by deterministic rules. "
-        "Do NOT invent information not stated in the story."
+        "Do NOT invent information not stated in the story. "
+        "Each category MUST be exactly one of: food_assistance, housing_assistance, "
+        "income_assistance, utility_assistance, medical_health_coverage, debt_hardship, "
+        "material_in_kind, crowdfunding_guidance, other_unlisted. "
+        "Each original_quote MUST be copied word for word from the story."
     )
 
     payload = {
@@ -919,6 +923,27 @@ def _call_watsonx_chat(
     return result, latency_ms, True
 
 
+_WX_CATEGORY_ALIASES = {
+    "housing": "housing_assistance", "rent": "housing_assistance",
+    "mortgage": "housing_assistance", "shelter": "housing_assistance",
+    "food": "food_assistance",
+    "income": "income_assistance", "employment": "income_assistance",
+    "unemployment": "income_assistance",
+    "utility": "utility_assistance", "utilities": "utility_assistance",
+    "medical": "medical_health_coverage", "health": "medical_health_coverage",
+    "healthcare": "medical_health_coverage", "health_care": "medical_health_coverage",
+    "debt": "debt_hardship",
+}
+
+
+def _normalize_wx_category(raw: Any) -> str:
+    """Map a model category such as 'Housing' to the contract value 'housing_assistance'."""
+    c = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if c in _ALLOWED_NEED_CATEGORIES:
+        return c
+    return _WX_CATEGORY_ALIASES.get(c, c)
+
+
 def _merge_watsonx_into_result(
     wx_result: Dict[str, Any],
     story: str,
@@ -943,7 +968,7 @@ def _merge_watsonx_into_result(
         for item in wx_needs:
             if not isinstance(item, dict):
                 continue
-            cat = item.get("category", "")
+            cat = _normalize_wx_category(item.get("category", ""))
             if cat not in _ALLOWED_NEED_CATEGORIES:
                 continue
             if cat in existing_need_cats:
